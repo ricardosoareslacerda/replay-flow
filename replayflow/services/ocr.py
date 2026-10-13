@@ -9,6 +9,7 @@ from pathlib import Path
 
 from replayflow.core.errors import CancelledError, ReplayFlowError, ToolMissingError
 
+MAX_DX, MAX_DY = 60, 24  # folga (em pixels da imagem ampliada 2x) entre o cursor e o texto aceito
 MIN_LABEL_CONF = 70  # abaixo disso o "rótulo" costuma ser ícone lido como letras (ex.: "EEB -")
 _WINDOWS_DEFAULT = Path(r"C:\Program Files\Tesseract-OCR\tesseract.exe")
 
@@ -60,19 +61,30 @@ def run(frames: list[Path], ocr_dir: Path, lang: str, cancel: threading.Event | 
 
 
 def text_at(image: Path, x: float, y: float, lang: str, half_w: int = 260, half_h: int = 50) -> str:
-    """Texto da linha da tela mais próxima do ponto (x, y) da imagem: o rótulo em que o usuário clicou."""
+    """Rótulo em que o usuário clicou: a linha de texto que contém o ponto (x, y) da imagem.
+
+    Só aceita texto sob o cursor (com pequena folga). Rótulo vizinho é pior que nenhum: um clique em
+    "Salvar" não pode virar "Cancelar" só porque "Cancelar" foi o texto mais legível por perto.
+    """
     from PIL import Image
 
     tess = _pytesseract()
     with Image.open(image) as img:
         left, top = max(0, int(x) - half_w), max(0, int(y) - half_h)
-        crop = img.crop((left, top, min(img.width, int(x) + half_w), min(img.height, int(y) + half_h)))
-        crop = prepare(crop)
-        try:
-            data = tess.image_to_data(crop, lang=lang, config="--psm 11", output_type=tess.Output.DICT)
-        except tess.TesseractError:
-            return ""
-    cx, cy = (x - left) * 2, (y - top) * 2
+        area = prepare(img.crop((left, top, min(img.width, int(x) + half_w), min(img.height, int(y) + half_h))))
+        tl, tt = max(0, int(x) - 70), max(0, int(y) - 14)
+        tight = prepare(img.crop((tl, tt, min(img.width, int(x) + 70), min(img.height, int(y) + 14))))
+    label = _line_at(tess, area, lang, "--psm 11", (x - left) * 2, (y - top) * 2)
+    if not label:  # botões com borda costumam sumir na leitura esparsa; tenta só a faixa sob o cursor
+        label = _line_at(tess, tight, lang, "--psm 7", (x - tl) * 2, (y - tt) * 2)
+    return label[:80]
+
+
+def _line_at(tess, img, lang: str, config: str, cx: float, cy: float) -> str:  # type: ignore[no-untyped-def]
+    try:
+        data = tess.image_to_data(img, lang=lang, config=config, output_type=tess.Output.DICT)
+    except tess.TesseractError:
+        return ""
     lines: dict[tuple[int, int, int], list[int]] = {}
     for i, word in enumerate(data["text"]):
         if word.strip() and float(data["conf"][i]) > 30:
@@ -85,13 +97,13 @@ def text_at(image: Path, x: float, y: float, lang: str, half_w: int = 260, half_
         y1 = max(data["top"][i] + data["height"][i] for i in idx)
         dx = max(x0 - cx, 0, cx - x1)
         dy = max(y0 - cy, 0, cy - y1)
-        d = dx + 3 * dy  # prioriza a mesma linha do clique
+        if dx > MAX_DX or dy > MAX_DY:
+            continue
         text = " ".join(data["text"][i] for i in idx)
         conf = sum(float(data["conf"][i]) for i in idx) / len(idx)
-        if d < best_d and conf >= MIN_LABEL_CONF and _looks_like_label(text):
-            best, best_d = text, d
-    return best.strip()[:80]
-
+        if dx + 3 * dy < best_d and conf >= MIN_LABEL_CONF and _looks_like_label(text):
+            best, best_d = text, dx + 3 * dy
+    return best.strip()
 
 def _looks_like_label(text: str) -> bool:
     """Descarta ruído de ícones ('(O)', 'a]'): exige uma palavra de verdade."""
