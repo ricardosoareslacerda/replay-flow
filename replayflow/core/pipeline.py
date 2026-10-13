@@ -104,6 +104,8 @@ class Pipeline:
             return False
         segments = transcriber.transcribe(self.layout.audio_wav, cfg.whisper_model, cfg.language,
                                           offline=self.private_mode, cancel=self.cancel)
+        if not segments:
+            log.warning("nenhuma fala detectada na narração: confira se o microfone certo está ligado e com volume")
         transcriber.write_outputs(segments, self.layout.transcript, self.session.name)
         timeline_store.write_source(self.layout.timeline, "transcript", [
             TimelineEvent(t=s.start, source="transcript", kind="segment",
