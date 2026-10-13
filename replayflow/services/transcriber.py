@@ -46,7 +46,7 @@ def write_outputs(segments: list[Segment], transcript_dir: Path, title: str) -> 
 
 
 def transcribe(wav: Path, model_name: str, language: str, offline: bool,
-               cancel: threading.Event | None = None) -> list[Segment]:
+               cancel: threading.Event | None = None, hotwords: str | None = None) -> list[Segment]:
     """offline=True (modo privado) só usa modelos já baixados; nunca acessa a rede."""
     try:
         from faster_whisper import WhisperModel
@@ -55,12 +55,12 @@ def transcribe(wav: Path, model_name: str, language: str, offline: bool,
 
     device = gpu_device()
     try:
-        return _transcribe(WhisperModel, device, wav, model_name, language, offline, cancel)
+        return _transcribe(WhisperModel, device, wav, model_name, language, offline, cancel, hotwords)
     except RuntimeError as e:
         if device == "cpu" or not _GPU_ERROR.search(str(e)):
             raise
         log.warning("GPU indisponível para a transcrição (%s); usando a CPU", e)
-        return _transcribe(WhisperModel, "cpu", wav, model_name, language, offline, cancel)
+        return _transcribe(WhisperModel, "cpu", wav, model_name, language, offline, cancel, hotwords)
 
 
 def _register_cuda_dlls() -> None:
@@ -87,7 +87,7 @@ def gpu_device() -> str:
 
 
 def _transcribe(whisper_model, device: str, wav: Path, model_name: str, language: str, offline: bool,  # type: ignore[no-untyped-def]
-                cancel: threading.Event | None) -> list[Segment]:
+                cancel: threading.Event | None, hotwords: str | None = None) -> list[Segment]:
     try:
         model = whisper_model(model_name, device=device, compute_type="int8", local_files_only=offline)
     except RuntimeError as e:
@@ -102,7 +102,8 @@ def _transcribe(whisper_model, device: str, wav: Path, model_name: str, language
             ) from e
         raise ReplayFlowError(f"Falha ao carregar o modelo '{model_name}': {e}") from e
 
-    raw_segments, info = model.transcribe(str(wav), language=language, vad_filter=True, word_timestamps=True)
+    raw_segments, info = model.transcribe(str(wav), language=language, vad_filter=True, word_timestamps=True,
+                                           hotwords=hotwords or None)  # nomes vistos na tela: "Au!Happy", não "ao rap"
     segments: list[Segment] = []
     for s in raw_segments:  # gerador: a transcrição avança a cada iteração
         if cancel is not None and cancel.is_set():

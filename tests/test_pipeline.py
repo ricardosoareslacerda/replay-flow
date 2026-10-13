@@ -55,7 +55,8 @@ class FakeServices:
         f.write_bytes(b"x")
         return [ExtractedFrame(f, 2.0, True)]
 
-    def _transcribe(self, wav: Path, model: str, lang: str, offline: bool, cancel: object) -> list[Segment]:
+    def _transcribe(self, wav: Path, model: str, lang: str, offline: bool, cancel: object,
+                    hotwords: str | None = None) -> list[Segment]:
         self._call(f"transcribe:offline={offline}")
         return [Segment(start=0.5, end=3.0, text="abro o boleto", confidence=0.9)]
 
@@ -163,3 +164,11 @@ def test_double_click_becomes_one_event() -> None:
     merged = merge_double_clicks([click(1.0, 5), click(1.2, 6), click(3.0, 5), click(5.0, 5), click(5.3, 90)])
 
     assert [(e.t, e.data.get("double", False)) for e in merged] == [(1.0, True), (3.0, False), (5.0, False), (5.3, False)]
+
+
+def test_hotwords_come_from_window_titles_without_emails(session: Session) -> None:
+    raw = session.root / "raw" / "input_events.jsonl"
+    raw.write_text("".join(TimelineEvent(t=t, source="window", kind="focus", data={"title": title}).model_dump_json() + "\n"
+                           for t, title in [(0.5, "Boleto Au!Happy - DUCKY LACERDA - ana@x.com - Gmail - Opera"),
+                                            (2.0, "Salvar como")]))
+    assert Pipeline(session)._hotwords() == "Boleto Au!Happy, DUCKY LACERDA"

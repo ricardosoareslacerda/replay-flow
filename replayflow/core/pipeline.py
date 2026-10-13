@@ -16,6 +16,9 @@ from replayflow.services import click_marker, exporter, ffmpeg, ocr, transcriber
 log = logging.getLogger(__name__)
 
 INPUT_EVENTS_FILE = "input_events.jsonl"
+HOTWORDS_MAX_CHARS = 300
+_GENERIC_TITLES = {"gmail", "opera", "google chrome", "microsoft edge", "mozilla firefox", "firefox", "brave",
+                   "replayflow", "explorador de arquivos", "file explorer", "salvar como", "save as"}
 CLICK_LEAD_S = 0.15  # a foto do clique mostra a tela imediatamente antes do efeito do clique
 Progress = Callable[[Stage, StageStatus | None], None]  # None = iniciando
 
@@ -76,6 +79,19 @@ class Pipeline:
 
     # Cada etapa retorna False quando desativada pela config (SKIPPED).
 
+    def _hotwords(self) -> str:
+        """Nomes próprios dos títulos de janela (ex.: "Boleto Au!Happy - DUCKY LACERDA"): a transcrição passa
+        a escrevê-los como aparecem na tela em vez de aproximar pelo som."""
+        parts: list[str] = []
+        for e in self._input_events():
+            if e.source != "window":
+                continue
+            for part in e.data["title"].split(" - "):
+                part = part.strip()
+                if part and "@" not in part and part.lower() not in _GENERIC_TITLES and part not in parts:
+                    parts.append(part)
+        return ", ".join(parts)[:HOTWORDS_MAX_CHARS]
+
     def _input_events(self) -> list[TimelineEvent]:
         """Eventos de clique/tecla já no relógio do vídeo (input_offset_s vem da sincronia com o OBS)."""
         raw = self.layout.raw / INPUT_EVENTS_FILE
@@ -103,7 +119,7 @@ class Pipeline:
         if not cfg.transcription_enabled or not self.layout.audio_wav.exists():
             return False
         segments = transcriber.transcribe(self.layout.audio_wav, cfg.whisper_model, cfg.language,
-                                          offline=self.private_mode, cancel=self.cancel)
+                                          offline=self.private_mode, cancel=self.cancel, hotwords=self._hotwords())
         if not segments:
             log.warning("nenhuma fala detectada na narração: confira se o microfone certo está ligado e com volume")
         transcriber.write_outputs(segments, self.layout.transcript, self.session.name)
