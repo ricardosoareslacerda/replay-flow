@@ -59,11 +59,13 @@ if (-not (Test-Path (Join-Path $Target "python\Scripts\pip.exe"))) {
 }
 
 Step "Instalando dependências Python"
+# Placa NVIDIA presente: inclui cuBLAS/cuDNN (~1,3 GB) para a transcrição rodar na GPU.
+$extras = "'media', 'input', 'ui', 'obs'" + $(if (Get-Command nvidia-smi -ErrorAction SilentlyContinue) { ", 'gpu'" } else { "" })
 $deps = & $py -c @"
 import tomllib
 p = tomllib.load(open(r'$Repo\pyproject.toml', 'rb'))['project']
 extras = p['optional-dependencies']
-print('\n'.join(p['dependencies'] + [d for k in ('media', 'input', 'ui', 'obs') for d in extras[k]]))
+print('\n'.join(p['dependencies'] + [d for k in ($extras) for d in extras[k]]))
 "@
 & $py -m pip install --no-warn-script-location --upgrade @($deps | ForEach-Object { $_.Trim() } | Where-Object { $_ })
 if ($LASTEXITCODE) { throw "pip install falhou" }

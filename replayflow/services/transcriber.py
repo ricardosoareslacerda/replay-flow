@@ -5,6 +5,9 @@ from __future__ import annotations
 import json
 import logging
 import math
+import os
+import re
+import sys
 import threading
 from pathlib import Path
 
@@ -13,6 +16,8 @@ from pydantic import BaseModel
 from replayflow.core.errors import CancelledError, ReplayFlowError, ToolMissingError
 
 log = logging.getLogger(__name__)
+
+_GPU_ERROR = re.compile(r"cublas|cudnn|cuda|cudart", re.IGNORECASE)
 
 
 class Segment(BaseModel):
@@ -47,9 +52,47 @@ def transcribe(wav: Path, model_name: str, language: str, offline: bool,
     except ImportError:
         raise ToolMissingError("faster-whisper não instalado: pip install -e .[media]") from None
 
+    device = gpu_device()
     try:
-        # CPU sempre: com placa NVIDIA, "auto" escolhe CUDA, mas as DLLs do cuBLAS/cuDNN não vêm no pacote portátil.
-        model = WhisperModel(model_name, device="cpu", compute_type="int8", local_files_only=offline)
+        return _transcribe(WhisperModel, device, wav, model_name, language, offline, cancel)
+    except RuntimeError as e:
+        if device == "cpu" or not _GPU_ERROR.search(str(e)):
+            raise
+        log.warning("GPU indisponível para a transcrição (%s); usando a CPU", e)
+        return _transcribe(WhisperModel, "cpu", wav, model_name, language, offline, cancel)
+
+
+def _register_cuda_dlls() -> None:
+    """Põe no caminho de DLLs o cuBLAS/cuDNN instalados via pip (nvidia-*-cu12) na pasta portátil."""
+    if sys.platform != "win32":
+        return
+    import site
+
+    for sp in site.getsitepackages():
+        for bin_dir in Path(sp).glob("nvidia/*/bin"):
+            os.add_dll_directory(str(bin_dir))
+            os.environ["PATH"] = f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"
+
+
+def gpu_device() -> str:
+    """'cuda' quando há placa NVIDIA utilizável; senão 'cpu'. A GPU transcreve ~2x mais rápido."""
+    try:
+        _register_cuda_dlls()
+        import ctranslate2
+
+        return "cuda" if ctranslate2.get_cuda_device_count() > 0 else "cpu"
+    except Exception:
+        return "cpu"
+
+
+def _transcribe(whisper_model, device: str, wav: Path, model_name: str, language: str, offline: bool,  # type: ignore[no-untyped-def]
+                cancel: threading.Event | None) -> list[Segment]:
+    try:
+        model = whisper_model(model_name, device=device, compute_type="int8", local_files_only=offline)
+    except RuntimeError as e:
+        if device != "cpu" and _GPU_ERROR.search(str(e)):
+            raise
+        raise ReplayFlowError(f"Falha ao carregar o modelo '{model_name}': {e}") from e
     except Exception as e:  # HF lança tipos variados para modelo ausente
         if offline:
             raise ReplayFlowError(
@@ -65,9 +108,9 @@ def transcribe(wav: Path, model_name: str, language: str, offline: bool,
             raise CancelledError()
         segments.append(Segment(start=s.start, end=s.end, text=s.text.strip(),
                                 confidence=round(math.exp(s.avg_logprob), 3)))
-    log.info("%d trechos transcritos", len(segments), extra={"segments": len(segments), "duration": info.duration})
+    log.info("%d trechos transcritos (%s)", len(segments), "GPU" if device == "cuda" else "CPU",
+             extra={"segments": len(segments), "duration": info.duration, "device": device})
     return segments
-
 
 def download_model(model_name: str) -> None:
     from faster_whisper import WhisperModel
