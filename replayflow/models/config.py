@@ -40,6 +40,7 @@ class PipelineConfig(BaseModel):
     dedupe_hash_distance: int = Field(default=5, ge=0)
     max_width: int = Field(default=1280, ge=320)
     jpg_quality: int = Field(default=85, ge=1, le=100)
+    input_offset_s: float = 0.0  # alinha o relógio da captura de input ao vídeo
 
     def fingerprint(self) -> str:
         return hashlib.sha256(self.model_dump_json().encode()).hexdigest()

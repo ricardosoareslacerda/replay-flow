@@ -14,6 +14,7 @@ class Stage(StrEnum):
     TRANSCRIPT = "transcript"
     FRAMES = "frames"
     OCR = "ocr"
+    INPUT = "input"
     EXPORT = "export"
 
 

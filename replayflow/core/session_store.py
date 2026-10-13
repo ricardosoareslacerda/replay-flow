@@ -7,6 +7,7 @@ import unicodedata
 from datetime import datetime
 from pathlib import Path
 
+from replayflow.core.errors import ReplayFlowError
 from replayflow.core.layout import SessionLayout
 from replayflow.models import PipelineConfig, Session, Stage, StageStatus
 
@@ -49,7 +50,10 @@ def save(session: Session) -> None:
 
 
 def load(root: Path) -> Session:
-    session = Session.model_validate_json(SessionLayout(root).session_json.read_text(encoding="utf-8"))
+    path = SessionLayout(root).session_json
+    if not path.is_file():
+        raise ReplayFlowError(f"{root} não é uma sessão do ReplayFlow (session.json ausente).")
+    session = Session.model_validate_json(path.read_text(encoding="utf-8"))
     return session.model_copy(update={"root": root})  # pasta pode ter sido movida
 
 
