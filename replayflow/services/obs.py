@@ -6,6 +6,7 @@ minimizado na bandeja, quando o usuário clica em Gravar, e o fecha ao sair.
 
 from __future__ import annotations
 
+import logging
 import socket
 import subprocess
 import time
@@ -13,6 +14,8 @@ from pathlib import Path
 
 from replayflow.core.errors import ReplayFlowError, ToolMissingError
 from replayflow.models.config import portable_home
+
+log = logging.getLogger(__name__)
 
 OBS_ARGS = ["--minimize-to-tray", "--disable-updater", "--disable-shutdown-check"]
 
@@ -63,8 +66,42 @@ class ObsRecorder:
                 f"Não conectou ao OBS em {host}:{port}. Ative no OBS: Ferramentas > Configurações do Servidor WebSocket. ({e})"
             ) from e
 
-    def start(self) -> None:
+    def prepare_tracks(self) -> bool:
+        """Microfone na trilha 1 e som do computador na trilha 2 (narração limpa para a transcrição)."""
+        try:
+            special = self._client.get_special_inputs()
+            mic, desktop = special.mic1, special.desktop1
+            if not mic:
+                return False
+            only = lambda n: {str(i): i == n for i in range(1, 7)}  # noqa: E731
+            self._client.set_input_audio_tracks(mic, only(1))
+            if desktop:
+                self._client.set_input_audio_tracks(desktop, only(2))
+            mode = self._client.get_profile_parameter("Output", "Mode").parameter_value or "Simple"
+            section = "SimpleOutput" if mode == "Simple" else "AdvOut"
+            self._client.set_profile_parameter(section, "RecTracks", "3")
+            return True
+        except Exception as e:  # trilhas separadas são melhoria, não requisito
+            log.warning("não foi possível separar as trilhas de áudio no OBS: %s", e)
+            return False
+
+    def start(self) -> float:
+        """Inicia a gravação e devolve o instante (time.monotonic) em que o vídeo de fato começou."""
         self._client.start_record()
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            status = self._client.get_record_status()
+            now = time.monotonic()
+            if status.output_active and status.output_duration > 0:
+                return now - status.output_duration / 1000
+            time.sleep(0.02)
+        raise ReplayFlowError("O OBS não confirmou o início da gravação em 10s.")
+
+    def pause(self) -> None:
+        self._client.pause_record()
+
+    def resume(self) -> None:
+        self._client.resume_record()
 
     def stop(self) -> Path:
         """Para a gravação e devolve o caminho do arquivo gerado pelo OBS."""

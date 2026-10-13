@@ -11,11 +11,12 @@ from replayflow.core import logging_setup, session_store, timeline_store
 from replayflow.core.errors import CancelledError, ReplayFlowError
 from replayflow.core.layout import SessionLayout
 from replayflow.models import Session, Stage, StageStatus, TimelineEvent
-from replayflow.services import exporter, ffmpeg, ocr, transcriber
+from replayflow.services import click_marker, exporter, ffmpeg, ocr, transcriber
 
 log = logging.getLogger(__name__)
 
 INPUT_EVENTS_FILE = "input_events.jsonl"
+CLICK_LEAD_S = 0.15  # a foto do clique mostra a tela imediatamente antes do efeito do clique
 Progress = Callable[[Stage, StageStatus | None], None]  # None = iniciando
 
 
@@ -75,13 +76,26 @@ class Pipeline:
 
     # Cada etapa retorna False quando desativada pela config (SKIPPED).
 
+    def _input_events(self) -> list[TimelineEvent]:
+        """Eventos de clique/tecla já no relógio do vídeo (input_offset_s vem da sincronia com o OBS)."""
+        raw = self.layout.raw / INPUT_EVENTS_FILE
+        offset = self.session.config.input_offset_s
+        return [e.model_copy(update={"t": max(0.0, e.t + offset)}) for e in timeline_store.read(raw)]
+
     def _stage_audio(self) -> bool:
+        tracks = ffmpeg.audio_streams(self.video)
+        if tracks >= 2:  # gravação do ReplayFlow: trilha 1 = microfone, trilha 2 = som do computador
+            sounds = ffmpeg.detect_sounds(self.video, 1, self.session.duration_s or 0, self.cancel)
+            timeline_store.write_source(self.layout.timeline, "audio", [
+                TimelineEvent(t=start, source="audio", kind="system_sound", data={"end": end}) for start, end in sounds
+            ])
+            log.info("narração na trilha 1; %d sons do computador detectados na trilha 2", len(sounds))
         if not self.session.config.transcription_enabled:
-            return False
-        if not ffmpeg.has_audio(self.video):
+            return tracks >= 2
+        if not tracks:
             log.warning("vídeo sem trilha de áudio: transcrição pulada")
             return False
-        ffmpeg.extract_audio(self.video, self.layout.audio_wav, self.cancel)
+        ffmpeg.extract_audio(self.video, self.layout.audio_wav, self.cancel, stream=0)
         return True
 
     def _stage_transcript(self) -> bool:
@@ -100,12 +114,36 @@ class Pipeline:
 
     def _stage_frames(self) -> bool:
         frames = ffmpeg.extract_frames(self.video, self.layout.frames, self.session.config, self.cancel)
-        timeline_store.write_source(self.layout.timeline, "frame", [
+        events = [
             TimelineEvent(t=f.t, source="frame", kind="captured",
                           data={"file": f.file.name, "scene_change": f.scene_change})
             for f in frames
-        ])
+        ]
+        timeline_store.write_source(self.layout.timeline, "frame", [*events, *self._click_frames()])
         return True
+
+    def _click_frames(self) -> list[TimelineEvent]:
+        """Uma foto por clique, tirada um instante antes dele, com o ponto clicado marcado."""
+        for old in self.layout.frames.glob("click_*.jpg"):
+            old.unlink()
+        clicks = [e for e in self._input_events() if e.source == "mouse" and e.kind == "click"]
+        if not clicks:
+            return []
+        cfg = self.session.config
+        scale = min(cfg.max_width, width := ffmpeg.video_width(self.video)) / width
+        events = []
+        for i, c in enumerate(clicks, start=1):
+            if self.cancel.is_set():
+                raise CancelledError()
+            out = self.layout.frames / f"click_{i:06d}.jpg"
+            ffmpeg.extract_frame_at(self.video, c.t - CLICK_LEAD_S, out, cfg, self.cancel)
+            if not out.exists():  # clique depois do fim do vídeo
+                continue
+            click_marker.mark(out, c.data["x"], c.data["y"], scale, cfg.jpg_quality)
+            events.append(TimelineEvent(t=c.t, source="frame", kind="click", data={
+                "file": out.name, "scene_change": False, "click": {"x": c.data["x"], "y": c.data["y"]}}))
+        log.info("%d fotos de clique geradas", len(events))
+        return events
 
     def _stage_ocr(self) -> bool:
         cfg = self.session.config
@@ -122,11 +160,9 @@ class Pipeline:
         return True
 
     def _stage_input(self) -> bool:
-        raw = self.layout.raw / INPUT_EVENTS_FILE
-        if not raw.exists():
+        if not (self.layout.raw / INPUT_EVENTS_FILE).exists():
             return False
-        offset = self.session.config.input_offset_s
-        events = [e.model_copy(update={"t": max(0.0, e.t + offset)}) for e in timeline_store.read(raw)]
+        events = self._input_events()
         for source in ("mouse", "key", "window"):
             timeline_store.write_source(self.layout.timeline, source, [e for e in events if e.source == source])
         return True

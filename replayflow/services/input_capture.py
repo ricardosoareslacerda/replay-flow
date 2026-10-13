@@ -117,6 +117,8 @@ class InputCapture:
         self._file = out_file.open("a", encoding="utf-8")
         self._lock = threading.Lock()
         self._t0 = time.monotonic()
+        self._paused_at: float | None = None
+        self._paused_total = 0.0
         self.recorder = InputRecorder(self._write, secret_key)
         self._listeners = []
         if keys:
@@ -124,8 +126,26 @@ class InputCapture:
         if mouse:
             self._listeners.append(pmouse.Listener(on_click=self._click))
 
+    @property
+    def started_at(self) -> float:
+        """Instante (time.monotonic) que corresponde a t=0 dos eventos."""
+        return self._t0
+
     def _now(self) -> float:
-        return time.monotonic() - self._t0
+        """Tempo de gravação: desconta as pausas, como o vídeo do OBS."""
+        return time.monotonic() - self._t0 - self._paused_total
+
+    def pause(self) -> None:
+        with self._lock:
+            if self._paused_at is None:
+                self.recorder.flush(self._now())
+                self._paused_at = time.monotonic()
+
+    def resume(self) -> None:
+        with self._lock:
+            if self._paused_at is not None:
+                self._paused_total += time.monotonic() - self._paused_at
+                self._paused_at = None
 
     def _write(self, event: TimelineEvent) -> None:
         self._file.write(event.model_dump_json() + "\n")
@@ -143,7 +163,8 @@ class InputCapture:
     def _press(self, key: object) -> None:
         name, char = self._key_name(key)
         with self._lock:
-            self.recorder.on_press(self._now(), name, char)
+            if self._paused_at is None:  # em pausa nada é registrado
+                self.recorder.on_press(self._now(), name, char)
 
     def _release(self, key: object) -> None:
         with self._lock:
@@ -152,7 +173,8 @@ class InputCapture:
     def _click(self, x: int, y: int, button: object, pressed: bool) -> None:
         if pressed:
             with self._lock:
-                self.recorder.on_click(self._now(), x, y, getattr(button, "name", str(button)))
+                if self._paused_at is None:
+                    self.recorder.on_click(self._now(), x, y, getattr(button, "name", str(button)))
 
     def start(self) -> None:
         self._t0 = time.monotonic()

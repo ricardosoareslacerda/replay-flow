@@ -65,17 +65,66 @@ def probe_duration(video: Path) -> float:
         raise ReplayFlowError(f"Não foi possível ler a duração de {video.name}: {out.stderr.strip()}") from None
 
 
-def has_audio(video: Path) -> bool:
+def audio_streams(video: Path) -> int:
     out = subprocess.run(
         [_bin("ffprobe"), "-v", "error", "-select_streams", "a", "-show_entries", "stream=index", "-of", "csv=p=0", str(video)],
         capture_output=True, text=True,
     )
-    return bool(out.stdout.strip())
+    return len(out.stdout.split())
 
 
-def extract_audio(video: Path, wav: Path, cancel: threading.Event | None = None) -> None:
-    _run([_bin("ffmpeg"), "-y", "-hide_banner", "-i", str(video), "-vn", "-ac", "1", "-ar", "16000",
-          "-c:a", "pcm_s16le", str(wav)], cancel)
+def has_audio(video: Path) -> bool:
+    return audio_streams(video) > 0
+
+
+def video_width(video: Path) -> int:
+    out = subprocess.run(
+        [_bin("ffprobe"), "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width", "-of", "csv=p=0", str(video)],
+        capture_output=True, text=True,
+    )
+    try:
+        return int(out.stdout.split()[0])
+    except (IndexError, ValueError):
+        raise ReplayFlowError(f"Não foi possível ler a largura de {video.name}: {out.stderr.strip()}") from None
+
+
+def extract_audio(video: Path, wav: Path, cancel: threading.Event | None = None, stream: int = 0) -> None:
+    """WAV 16 kHz mono de uma trilha. Gravações do OBS do ReplayFlow: trilha 0 = microfone, 1 = computador."""
+    _run([_bin("ffmpeg"), "-y", "-hide_banner", "-i", str(video), "-map", f"0:a:{stream}", "-vn", "-ac", "1",
+          "-ar", "16000", "-c:a", "pcm_s16le", str(wav)], cancel)
+
+
+_SILENCE_RE = re.compile(r"silence_(start|end):\s*(-?[0-9.]+)")
+
+
+def parse_sounds(stderr: str, duration: float, min_len: float = 0.3) -> list[tuple[float, float]]:
+    """Converte a saída do silencedetect em intervalos com som [(início, fim)]."""
+    sounds: list[tuple[float, float]] = []
+    cursor: float | None = 0.0  # início do trecho com som em andamento
+    for kind, value in _SILENCE_RE.findall(stderr):
+        t = max(0.0, float(value))
+        if kind == "start":
+            if cursor is not None and t - cursor >= min_len:
+                sounds.append((cursor, t))
+            cursor = None
+        else:
+            cursor = t
+    if cursor is not None and duration - cursor >= min_len:
+        sounds.append((cursor, duration))
+    return sounds
+
+
+def detect_sounds(video: Path, stream: int, duration: float, cancel: threading.Event | None = None,
+                  noise_db: int = -45) -> list[tuple[float, float]]:
+    """Intervalos em que a trilha tem som (ex.: alertas e avisos do computador)."""
+    stderr = _run([_bin("ffmpeg"), "-hide_banner", "-i", str(video), "-map", f"0:a:{stream}",
+                   "-af", f"silencedetect=n={noise_db}dB:d=0.5", "-f", "null", "-"], cancel)
+    return parse_sounds(stderr, duration)
+
+
+def extract_frame_at(video: Path, t: float, out: Path, cfg: PipelineConfig, cancel: threading.Event | None = None) -> None:
+    _run([_bin("ffmpeg"), "-y", "-hide_banner", "-ss", f"{max(0.0, t):.3f}", "-i", str(video), "-frames:v", "1",
+          "-vf", f"scale='min({cfg.max_width},iw)':-2", "-q:v", str(jpeg_qscale(cfg.jpg_quality)), str(out)], cancel)
 
 
 def jpeg_qscale(quality: int) -> int:

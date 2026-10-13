@@ -77,3 +77,20 @@ def test_extract_audio_and_frames(tmp_path: Path) -> None:
     with Image.open(frames[0].file) as img:
         assert img.width == 320
     assert abs(ffmpeg.probe_duration(video) - 6) < 0.2
+
+
+def test_parse_sounds_inverts_silences() -> None:
+    from replayflow.services.ffmpeg import parse_sounds
+
+    stderr = ("[silencedetect @ 0x1] silence_start: 0\n"
+              "[silencedetect @ 0x1] silence_end: 3.2 | silence_duration: 3.2\n"
+              "[silencedetect @ 0x1] silence_start: 4.0\n"
+              "[silencedetect @ 0x1] silence_end: 9.5 | silence_duration: 5.5\n")
+    assert parse_sounds(stderr, duration=10.0) == [(3.2, 4.0), (9.5, 10.0)]
+
+
+def test_parse_sounds_ignores_blips_and_handles_no_silence() -> None:
+    from replayflow.services.ffmpeg import parse_sounds
+
+    assert parse_sounds("silence_start: 0\nsilence_end: 5.0\nsilence_start: 5.1\n", duration=8.0) == []
+    assert parse_sounds("", duration=2.0) == [(0.0, 2.0)]

@@ -78,6 +78,7 @@ class MainWindow(QMainWindow):
         self.capture: InputCapture | None = None
         self.obs = None
         self.obs_proc: subprocess.Popen[bytes] | None = None
+        self.paused = False
         self._build()
         self._wire_logging()
         self._apply_private_mode()
@@ -109,6 +110,7 @@ class MainWindow(QMainWindow):
         self.btn_open = self._button("Abrir sessão…", self._open_session, row)
         self.btn_import = self._button("Importar vídeo…", self._import_video, row)
         self.btn_record = self._button("Gravar (OBS)", self._toggle_record, row)
+        self.btn_pause = self._button("Pausar", self._toggle_pause, row)
         form.addRow(row)
         self.session_label = QLabel("Nenhuma sessão aberta")
         form.addRow(self.session_label)
@@ -202,6 +204,7 @@ class MainWindow(QMainWindow):
             frame_interval_s=self.interval.value(),
             max_width=self.max_width.value(),
             jpg_quality=self.quality.value(),
+            input_offset_s=self.session.config.input_offset_s if self.session else 0.0,  # medido na gravação
         )
 
     def _load_config_into_form(self, cfg: PipelineConfig) -> None:
@@ -224,6 +227,8 @@ class MainWindow(QMainWindow):
         self.btn_import.setEnabled(has_session and not busy and not recording)
         self.btn_record.setEnabled(has_session and not busy)
         self.btn_record.setText("Parar gravação" if recording else "Gravar (OBS)")
+        self.btn_pause.setEnabled(recording)
+        self.btn_pause.setText("Retomar" if self.paused else "Pausar")
         self.btn_process.setEnabled(has_video and not busy and not recording)
         self.btn_cancel.setEnabled(busy)
         self.btn_folder.setEnabled(has_session)
@@ -256,7 +261,8 @@ class MainWindow(QMainWindow):
             return self._error("Informe o nome da sessão.")
         base = Path(self.base_dir.text())
         self.settings.setValue("base_dir", str(base))
-        self.session = session_store.create_session(base, name, self._config())
+        config = self._config().model_copy(update={"input_offset_s": 0.0})  # não herda a sincronia da sessão anterior
+        self.session = session_store.create_session(base, name, config)
         logging.getLogger("replayflow").info(f"sessão criada: {self.session.root}")
         self._refresh()
 
@@ -296,14 +302,45 @@ class MainWindow(QMainWindow):
             if self.chk_mouse.isChecked() or self.chk_keys.isChecked():
                 self.capture = InputCapture(self.session.root / "raw" / INPUT_EVENTS_FILE,
                                             mouse=self.chk_mouse.isChecked(), keys=self.chk_keys.isChecked())
+                self.capture.start()  # antes do OBS: nenhum clique se perde enquanto o vídeo arranca
+            offset = 0.0
             if self.obs:
-                self.obs.start()
-            if self.capture:
-                self.capture.start()
+                if self.obs.prepare_tracks():
+                    log.info("áudio em trilhas separadas: 1 = microfone (narração), 2 = som do computador")
+                video_start = self.obs.start()
+                if self.capture:  # sincronia: leva o relógio dos cliques/teclas para o relógio do vídeo
+                    offset = self.capture.started_at - video_start
+                    log.info(f"sincronia: vídeo começou {-offset:.2f}s depois da captura de input")
+            self._set_input_offset(offset)
             log.info("gravação iniciada" + (" (OBS)" if self.obs else "") + (" + captura de input" if self.capture else ""))
         except ReplayFlowError as e:
+            if self.capture:
+                self.capture.stop()
             self.obs = self.capture = None
             self._error(str(e))
+        self._refresh()
+
+    def _set_input_offset(self, offset: float) -> None:
+        assert self.session
+        config = self.session.config.model_copy(update={"input_offset_s": round(offset, 3)})
+        self.session = self.session.model_copy(update={"config": config})
+        session_store.save(self.session)
+
+    def _toggle_pause(self) -> None:
+        log = logging.getLogger("replayflow")
+        if self.paused:
+            if self.obs:
+                self.obs.resume()
+            if self.capture:
+                self.capture.resume()
+            log.info("gravação retomada")
+        else:
+            if self.capture:
+                self.capture.pause()
+            if self.obs:
+                self.obs.pause()
+            log.info("gravação pausada: nada é gravado nem registrado até retomar")
+        self.paused = not self.paused
         self._refresh()
 
     def _connect_obs(self):  # type: ignore[no-untyped-def]
@@ -327,6 +364,8 @@ class MainWindow(QMainWindow):
 
     def _stop_record(self) -> None:
         assert self.session
+        if self.paused:
+            self._toggle_pause()
         if self.capture:
             self.capture.stop()
         video = self.obs.stop() if self.obs else None

@@ -4,7 +4,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-EventSource = Literal["transcript", "frame", "ocr", "mouse", "key", "window", "marker"]
+EventSource = Literal["transcript", "frame", "ocr", "mouse", "key", "window", "marker", "audio"]
 
 
 class TimelineEvent(BaseModel):

@@ -15,6 +15,7 @@ from replayflow.models import Session, Stage, StageStatus, TimelineEvent
 from replayflow.services.transcriber import mmss
 
 OCR_EXCERPT_CHARS = 1500
+ACTION_SOURCES = ("mouse", "key", "window", "audio")
 _BUTTONS = {"left": "esquerdo", "right": "direito", "middle": "do meio"}
 
 ANALYSIS_REQUESTS = (
@@ -62,9 +63,17 @@ def describe_action(e: TimelineEvent) -> str:
             return f"tecla {e.data['key']}"
         case "key", "secret_mode":
             return "modo sigiloso " + ("ligado" if e.data.get("on") else "desligado")
+        case "audio", "system_sound":
+            return f"som do computador ({e.data['end'] - e.t:.1f}s)"
         case "window", "focus":
             return f"janela ativa: {e.data['title']}"
     return f"{e.source}:{e.kind}"
+
+
+def _frame_note(frame: TimelineEvent) -> str:
+    if frame.kind == "click":
+        return " (foto do clique, ponto marcado em vermelho)"
+    return " (mudança de tela)" if frame.data.get("scene_change") else ""
 
 
 def build_steps(events: list[TimelineEvent], duration: float) -> list[Step]:
@@ -82,7 +91,7 @@ def build_steps(events: list[TimelineEvent], duration: float) -> list[Step]:
         steps.append(Step(
             index=i + 1, start=frame.t, end=end, frame=frame, ocr=ocr_by_frame.get(frame.data["file"]),
             speech=[e for e in events if e.source == "transcript" and inside(e.t)],
-            actions=[e for e in events if e.source in ("mouse", "key", "window") and inside(e.t)],
+            actions=[e for e in events if e.source in ACTION_SOURCES and inside(e.t)],
         ))
     return steps
 
@@ -165,7 +174,7 @@ def build_package(session: Session, steps: list[Step], events: list[TimelineEven
     ]
     for s in (s for s in steps if s.relevant):
         out += [f"### Passo {s.index} [{mmss(s.start)} - {mmss(s.end)}] `{s.frame.data['file']}`"
-                + (" (mudança de tela)" if s.frame.data.get("scene_change") else ""), ""]
+                + _frame_note(s.frame), ""]
         if s.speech:
             out += ["**Narração:** " + " ".join(e.data["text"] for e in s.speech), ""]
         if s.actions:

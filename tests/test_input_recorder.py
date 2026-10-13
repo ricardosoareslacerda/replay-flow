@@ -56,3 +56,26 @@ def test_click_flushes_pending_text() -> None:
 
     assert [e.kind for e in events] == ["text", "click"]
     assert events[0].t == 1.0
+
+
+def test_capture_pause_drops_events_and_discounts_paused_time(tmp_path, monkeypatch) -> None:
+    from replayflow.services import input_capture as ic
+
+    clock = [100.0]
+    monkeypatch.setattr(ic.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(ic, "active_window_title", lambda: None)
+    cap = ic.InputCapture(tmp_path / "events.jsonl", mouse=False, keys=False)
+    cap.recorder._window_title = lambda: None
+    clock[0] = 102.0
+    cap._click(1, 1, "left", True)       # t = 2
+    cap.pause()
+    clock[0] = 110.0
+    cap._click(2, 2, "left", True)       # em pausa: ignorado
+    cap.resume()
+    clock[0] = 111.0
+    cap._click(3, 3, "left", True)       # t = 11 - 8 de pausa = 3
+    cap.stop()
+
+    lines = (tmp_path / "events.jsonl").read_text(encoding="utf-8").splitlines()
+    import json
+    assert [(json.loads(l)["t"], json.loads(l)["data"]["x"]) for l in lines] == [(2.0, 1), (3.0, 3)]
