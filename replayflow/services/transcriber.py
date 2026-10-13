@@ -48,7 +48,8 @@ def transcribe(wav: Path, model_name: str, language: str, offline: bool,
         raise ToolMissingError("faster-whisper não instalado: pip install -e .[media]") from None
 
     try:
-        model = WhisperModel(model_name, device="auto", compute_type="int8", local_files_only=offline)
+        # CPU sempre: com placa NVIDIA, "auto" escolhe CUDA, mas as DLLs do cuBLAS/cuDNN não vêm no pacote portátil.
+        model = WhisperModel(model_name, device="cpu", compute_type="int8", local_files_only=offline)
     except Exception as e:  # HF lança tipos variados para modelo ausente
         if offline:
             raise ReplayFlowError(
