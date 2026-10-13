@@ -13,7 +13,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-media = ["faster-whisper>=1.0", "pytesseract>=0.3.10", "Pillow>=10", "imagehash>=4.3"]
+media = ["faster-whisper>=1.0", "pytesseract>=0.3.10", "Pillow>=10"]
 input = ["pynput>=1.7"]
 ui = ["PyQt6>=6.6"]
 obs = ["obsws-python>=1.7"]
