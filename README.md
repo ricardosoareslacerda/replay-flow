@@ -77,16 +77,19 @@ Já vem com `pip install -e ".[all]"`. Os modelos ficam no cache do Hugging Face
 .venv\Scripts\replayflow.exe        # ou: replayflow, com a venv ativa
 ```
 
-O topo da janela tem um **Passo a passo** com um botão **Próximo: …** que sempre executa a próxima ação:
+A janela tem um bloco só, **Registrar uma atividade do seu dia a dia**, com um botão **Próximo: …** que sempre executa a próxima ação:
 
-1. **Sessão:** escreva o **Nome** e clique em Próximo (cria a sessão em `Sessions\`).
-2. **Gravar ou importar:** **Gravar (OBS)** abre o OBS escondido na bandeja, liga a captura de cliques/teclas e grava. Use **Pausar/Retomar** se precisar interromper; a pausa é descontada de vídeo e eventos. **Parar gravação** importa o vídeo. Para um vídeo já gravado, use **Importar vídeo…**.
-3. **Processar:** com "processar automaticamente" ligado (padrão), começa sozinho ao parar a gravação. O botão **Processar sessão** serve para vídeos importados e para retomar um processamento interrompido.
-4. **Revisar:** abre o `claude_package.md`; **Reproduzir vídeo** abre a gravação.
+1. **Nomear a atividade:** escreva com suas palavras o que vai mostrar (ex.: "baixar e arquivar as faturas do mês").
+2. **Gravar:** abre o OBS escondido, liga a captura de cliques/teclas e grava. **Pausar/Retomar** aparece durante a gravação; a pausa é descontada de vídeo e eventos.
+3. **Processar:** começa sozinho ao parar a gravação. Enquanto processa, todos os comandos ficam bloqueados (só **Ferramentas › Cancelar processamento** continua disponível).
+4. **Revisar:** abre o `claude_package.md`.
 5. **Enviar ao Claude:** copia o prompt, seleciona o pacote no Explorer e abre o Claude no navegador. O envio é sempre manual.
 
-Os botões avulsos continuam disponíveis para seguir de qualquer ponto. Em **Opções** ficam o microfone e a saída de som gravados (o app avisa se o microfone gravar silêncio), o fluxo automático, o modo privado e a máscara de dados sensíveis; o resto fica em **opções avançadas**.
+Menus:
 
+- **Atividade:** nova, abrir uma gravada, **importar vídeo já gravado** (janela própria: nome + arquivo → importa e processa), reproduzir vídeo, abrir pasta.
+- **Ferramentas:** processar/retomar, gerar pacote, copiar prompt, cancelar processamento.
+- **Configurações:** **Áudio** (microfone da narração e saída de som; o app avisa se o microfone gravar silêncio), **Opções** (fluxo automático, modo privado, máscara de dados e ajustes avançados) e a pasta onde as atividades são salvas.
 O que a gravação pelo OBS acrescenta: microfone e som do computador em trilhas separadas (a transcrição usa só a sua voz; sons do sistema viram eventos), sincronia medida entre o início real do vídeo e os cliques, e uma foto por clique (tirada 0,15 s antes, com o ponto marcado) com o rótulo lido sob o cursor e o texto em volta (caixas de diálogo). No Ctrl+V, o texto colado é registrado.
 
 Durante a gravação, aperte **F9** antes de digitar uma senha e de novo depois. Nesse intervalo, só a quantidade de caracteres é registrada.

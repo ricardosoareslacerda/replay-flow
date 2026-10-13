@@ -11,9 +11,9 @@ from pathlib import Path
 from PyQt6.QtCore import QObject, QSettings, Qt, QThread, QUrl, pyqtSignal
 from PyQt6.QtGui import QDesktopServices, QGuiApplication
 from PyQt6.QtWidgets import (
-    QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QInputDialog,
-    QLabel, QLineEdit, QMainWindow, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea, QSpinBox,
-    QVBoxLayout, QWidget,
+    QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog, QFormLayout, QGroupBox,
+    QHBoxLayout, QInputDialog, QLabel, QLineEdit, QMainWindow, QMessageBox, QPlainTextEdit, QProgressBar,
+    QPushButton, QSpinBox, QVBoxLayout, QWidget,
 )
 
 from replayflow.core import network_guard, session_store
@@ -29,6 +29,8 @@ MODELS = ["tiny", "base", "small", "medium", "large-v3"]
 FRAME_MODES = {"Ambos": FrameMode.BOTH, "Por tempo": FrameMode.INTERVAL, "Mudança de cena": FrameMode.SCENE}
 STATUS_ICON = {None: "⏳", StageStatus.DONE: "✅", StageStatus.SKIPPED: "➖", StageStatus.FAILED: "❌",
                StageStatus.PENDING: "○"}
+STAGE_NAMES = {Stage.AUDIO: "áudio", Stage.TRANSCRIPT: "transcrição", Stage.FRAMES: "imagens",
+               Stage.OCR: "texto das telas", Stage.INPUT: "cliques e teclas", Stage.EXPORT: "pacote"}
 MIC_SILENT_DB = -80.0  # média abaixo disso = microfone mudo (um microfone vivo em sala quieta fica em torno de -70)
 WARNING = ("⚠ Gravações podem conter dados sensíveis (valores, CPFs, documentos). Tudo fica nesta máquina; "
            "use F9 para o modo sigiloso ao digitar senhas e revise o pacote antes de enviá-lo a qualquer IA.")
@@ -92,53 +94,9 @@ class MainWindow(QMainWindow):
 
     def _build(self) -> None:
         defaults = PipelineConfig()
-        root = QVBoxLayout()
-        warning = QLabel(WARNING)
-        warning.setWordWrap(True)
-        warning.setStyleSheet("background:#fff3cd;color:#664d03;padding:6px;border-radius:4px;")
-        root.addWidget(warning)
+        self.base_path = str(self.settings.value("base_dir", str(AppConfig().base_dir)))
 
-        # Guia "próximo, próximo": diz e executa a próxima ação. Os botões de baixo continuam para quem
-        # quiser seguir de qualquer ponto (ex.: importar um vídeo de fora ou reprocessar).
-        guide = QGroupBox("Passo a passo")
-        gl = QVBoxLayout(guide)
-        self.steps_label = QLabel()
-        self.steps_label.setTextFormat(Qt.TextFormat.RichText)
-        self.hint = QLabel()
-        self.hint.setWordWrap(True)
-        self.btn_next = QPushButton()
-        self.btn_next.setMinimumHeight(40)
-        self.btn_next.setStyleSheet("font-size:14px;font-weight:bold;")
-        self.btn_next.clicked.connect(self._next)
-        gl.addWidget(self.steps_label)
-        gl.addWidget(self.hint)
-        gl.addWidget(self.btn_next)
-        root.addWidget(guide)
-
-        sess = QGroupBox("Sessão")
-        form = QFormLayout(sess)
-        self.name = QLineEdit(placeholderText="ex.: automação boletos")
-        base = QHBoxLayout()
-        self.base_dir = QLineEdit(self.settings.value("base_dir", str(AppConfig().base_dir)))
-        pick = QPushButton("…")
-        pick.clicked.connect(self._pick_base_dir)
-        base.addWidget(self.base_dir)
-        base.addWidget(pick)
-        form.addRow("Nome", self.name)
-        form.addRow("Pasta base", base)
-        row = QHBoxLayout()
-        self.btn_new = self._button("Nova sessão", self._new_session, row)
-        self.btn_open = self._button("Abrir sessão…", self._open_session, row)
-        self.btn_import = self._button("Importar vídeo…", self._import_video, row)
-        self.btn_record = self._button("Gravar (OBS)", self._toggle_record, row)
-        self.btn_pause = self._button("Pausar", self._toggle_pause, row)
-        form.addRow(row)
-        self.session_label = QLabel("Nenhuma sessão aberta")
-        form.addRow(self.session_label)
-        root.addWidget(sess)
-
-        opts = QGroupBox("Opções")
-        of = QFormLayout(opts)
+        # Configurações moram em janelas do menu; o corpo da janela fica só com o passo a passo.
         self.language = QComboBox()
         self.language.addItems(LANGUAGES)
         self.model = QComboBox()
@@ -154,70 +112,133 @@ class MainWindow(QMainWindow):
         self.chk_mouse = QCheckBox("Capturar cliques e janela", checked=True)
         self.chk_keys = QCheckBox("Capturar teclas (F9 = modo sigiloso)", checked=True)
         self.chk_private = QCheckBox("Modo privado (bloqueia rede externa)", checked=True)
+        self.chk_private.toggled.connect(self._apply_private_mode)
         self.chk_redact = QCheckBox("Mascarar e-mails, CPF/CNPJ e números de cartão no pacote para o Claude",
                                     checked=self.settings.value("redact", True, type=bool))
         self.chk_redact.toggled.connect(lambda on: self.settings.setValue("redact", on))
-        self.chk_private.toggled.connect(self._apply_private_mode)
-        self.mic = self._device_combo(audio_devices.microphones(), "mic_device")
-        self.out = self._device_combo(audio_devices.outputs(), "out_device")
         self.chk_auto = QCheckBox("Ao parar a gravação, processar e preparar o pacote para o Claude automaticamente",
                                   checked=self.settings.value("auto_flow", True, type=bool))
         self.chk_auto.toggled.connect(lambda on: self.settings.setValue("auto_flow", on))
-        of.addRow("Microfone (sua voz)", self.mic)
-        of.addRow("Som do computador", self.out)
-        of.addRow(self.chk_auto)
-        of.addRow(self.chk_private)
-        of.addRow(self.chk_redact)
-        # Ajustes técnicos ficam recolhidos: o padrão serve para gravações de tela comuns.
-        self.advanced = QWidget()
-        af = QFormLayout(self.advanced)
-        af.setContentsMargins(0, 0, 0, 0)
+        self.mic = self._device_combo(audio_devices.microphones(), "mic_device")
+        self.out = self._device_combo(audio_devices.outputs(), "out_device")
+        self.audio_dialog = self._audio_dialog()
+        self.options_dialog = self._options_dialog()
+        self._build_menu()
+
+        root = QVBoxLayout()
+        warning = QLabel(WARNING)
+        warning.setWordWrap(True)
+        warning.setStyleSheet("background:#fff3cd;color:#664d03;padding:6px;border-radius:4px;")
+        root.addWidget(warning)
+
+        # Um bloco só: o nome da atividade faz parte do passo a passo (sem ele não há o que gravar).
+        guide = QGroupBox("Registrar uma atividade do seu dia a dia")
+        gl = QVBoxLayout(guide)
+        self.steps_label = QLabel()
+        self.steps_label.setTextFormat(Qt.TextFormat.RichText)
+        self.hint = QLabel()
+        self.hint.setWordWrap(True)
+        name_row = QFormLayout()
+        self.name = QLineEdit(placeholderText="ex.: baixar e arquivar as faturas do mês")
+        self.name.returnPressed.connect(self._next)
+        name_row.addRow("Que atividade você vai mostrar?", self.name)
+        self.session_label = QLabel()
+        self.session_label.setStyleSheet("color:gray;")
+        buttons = QHBoxLayout()
+        self.btn_next = QPushButton()
+        self.btn_next.setMinimumHeight(44)
+        self.btn_next.setStyleSheet("font-size:14px;font-weight:bold;")
+        self.btn_next.clicked.connect(self._next)
+        self.btn_pause = QPushButton("Pausar")
+        self.btn_pause.setMinimumHeight(44)
+        self.btn_pause.clicked.connect(self._toggle_pause)
+        buttons.addWidget(self.btn_next, stretch=1)
+        buttons.addWidget(self.btn_pause)
+        self.progress = QProgressBar(maximum=len(Stage))
+        self.stage_label = QLabel()
+        for w in (self.steps_label, self.hint):
+            gl.addWidget(w)
+        gl.addLayout(name_row)
+        gl.addWidget(self.session_label)
+        gl.addLayout(buttons)
+        gl.addWidget(self.progress)
+        gl.addWidget(self.stage_label)
+        root.addWidget(guide)
+
+        log_box = QGroupBox("Andamento")
+        ll = QVBoxLayout(log_box)
+        self.log = QPlainTextEdit(readOnly=True)
+        self.log.setMaximumBlockCount(5000)
+        self.log.setMinimumHeight(140)
+        ll.addWidget(self.log)
+        root.addWidget(log_box, stretch=1)
+
+        container = QWidget()
+        container.setLayout(root)
+        self.setCentralWidget(container)
+        screen = QGuiApplication.primaryScreen()
+        avail = screen.availableGeometry() if screen else None
+        self.resize(900, min(720, avail.height() - 60) if avail else 720)
+
+    def _build_menu(self) -> None:
+        bar = self.menuBar()
+        m = bar.addMenu("&Atividade")
+        self.act_new = m.addAction("Nova atividade", self._start_over)
+        self.act_open = m.addAction("Abrir atividade gravada…", self._open_session)
+        self.act_import = m.addAction("Importar vídeo já gravado…", self._import_dialog)
+        m.addSeparator()
+        self.act_play = m.addAction("Reproduzir vídeo", self._play_video)
+        self.act_folder = m.addAction("Abrir pasta da atividade", self._open_folder)
+        m.addSeparator()
+        m.addAction("Sair", self.close)
+        t = bar.addMenu("&Ferramentas")
+        self.act_process = t.addAction("Processar / retomar processamento", lambda: self._process())
+        self.act_package = t.addAction("Gerar pacote para Claude", self._package)
+        self.act_prompt = t.addAction("Copiar prompt para Claude", self._copy_prompt)
+        t.addSeparator()
+        self.act_cancel = t.addAction("Cancelar processamento", self._cancel)
+        c = bar.addMenu("&Configurações")
+        self.act_audio = c.addAction("Áudio: microfone e som…", self.audio_dialog.exec)
+        self.act_options = c.addAction("Opções…", self.options_dialog.exec)
+        self.act_base = c.addAction("Pasta onde as atividades são salvas…", self._pick_base_dir)
+
+    def _audio_dialog(self) -> QDialog:
+        d = QDialog(self)
+        d.setWindowTitle("Áudio da gravação")
+        f = QFormLayout(d)
+        info = QLabel("Escolha o microfone que grava a sua voz e a saída de som do computador. "
+                      "Se a transcrição sair vazia, troque o microfone aqui.")
+        info.setWordWrap(True)
+        f.addRow(info)
+        f.addRow("Microfone (sua voz)", self.mic)
+        f.addRow("Som do computador", self.out)
+        close = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        close.rejected.connect(d.accept)
+        f.addRow(close)
+        d.setMinimumWidth(560)
+        return d
+
+    def _options_dialog(self) -> QDialog:
+        d = QDialog(self)
+        d.setWindowTitle("Opções")
+        f = QFormLayout(d)
+        for w in (self.chk_auto, self.chk_private, self.chk_redact):
+            f.addRow(w)
+        adv = QGroupBox("Avançado (deixe o padrão se estiver em dúvida)")
+        af = QFormLayout(adv)
         af.addRow("Idioma", self.language)
         af.addRow("Modelo Whisper", self.model)
         af.addRow("Frames", self.frame_mode)
         af.addRow("Intervalo entre frames", self.interval)
         af.addRow("Largura máx. da imagem", self.max_width)
         af.addRow("Qualidade JPG", self.quality)
-        toggles = QHBoxLayout()
         for w in (self.chk_transcribe, self.chk_ocr, self.chk_mouse, self.chk_keys):
-            toggles.addWidget(w)
-        af.addRow(toggles)
-        self.advanced.setVisible(False)
-        self.chk_advanced = QCheckBox("Mostrar opções avançadas (deixe o padrão se estiver em dúvida)")
-        self.chk_advanced.toggled.connect(self.advanced.setVisible)
-        of.addRow(self.chk_advanced)
-        of.addRow(self.advanced)
-        root.addWidget(opts)
-
-        self.progress = QProgressBar(maximum=len(Stage))
-        self.stage_label = QLabel()
-        root.addWidget(self.progress)
-        root.addWidget(self.stage_label)
-
-        actions = QHBoxLayout()
-        self.btn_process = self._button("Processar sessão", lambda: self._process(), actions)
-        self.btn_cancel = self._button("Cancelar", self._cancel, actions)
-        self.btn_play = self._button("Reproduzir vídeo", self._play_video, actions)
-        self.btn_folder = self._button("Abrir pasta da sessão", self._open_folder, actions)
-        self.btn_package = self._button("Gerar pacote para Claude", self._package, actions)
-        self.btn_prompt = self._button("Copiar prompt para Claude", self._copy_prompt, actions)
-        root.addLayout(actions)
-
-        self.log = QPlainTextEdit(readOnly=True)
-        self.log.setMaximumBlockCount(5000)
-        self.log.setMinimumHeight(140)  # com rolagem, garante o log visível em telas baixas
-        root.addWidget(self.log, stretch=1)
-
-        container = QWidget()
-        container.setLayout(root)
-        # Rolagem em vez de janela maior que a tela: em notebooks 1080p o conteúdo passa da altura útil.
-        scroll = QScrollArea(widgetResizable=True)
-        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
-        scroll.setWidget(container)
-        self.setCentralWidget(scroll)
-        screen = QGuiApplication.primaryScreen()
-        avail = screen.availableGeometry() if screen else None
-        self.resize(960, min(1000, avail.height() - 60) if avail else 760)
+            af.addRow(w)
+        f.addRow(adv)
+        close = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        close.rejected.connect(d.accept)
+        f.addRow(close)
+        return d
 
     def _device_combo(self, devices: list[audio_devices.AudioDevice], key: str) -> QComboBox:
         combo = QComboBox()
@@ -228,13 +249,6 @@ class MainWindow(QMainWindow):
         combo.setCurrentIndex(max(saved, 0))
         combo.currentIndexChanged.connect(lambda _: self.settings.setValue(key, combo.currentData()))
         return combo
-
-    @staticmethod
-    def _button(text: str, slot, layout: QHBoxLayout) -> QPushButton:  # type: ignore[no-untyped-def]
-        b = QPushButton(text)
-        b.clicked.connect(slot)
-        layout.addWidget(b)
-        return b
 
     def _wire_logging(self) -> None:
         self.log_bridge = LogBridge()
@@ -272,27 +286,30 @@ class MainWindow(QMainWindow):
     def _refresh(self) -> None:
         busy = self.thread is not None
         recording = self.capture is not None or self.obs is not None
+        idle = not busy and not recording  # gravando ou processando: nada que interfira fica disponível
         has_session = self.session is not None
         has_video = has_session and self.session.video_file is not None  # type: ignore[union-attr]
-        for b in (self.btn_new, self.btn_open):
-            b.setEnabled(not busy and not recording)
-        self.btn_import.setEnabled(has_session and not busy and not recording)
-        self.btn_record.setEnabled(has_session and not busy)
-        self.btn_record.setText("Parar gravação" if recording else "Gravar (OBS)")
-        self.btn_pause.setEnabled(recording)
+        self.name.setEnabled(idle and not has_session)
+        for a in (self.act_new, self.act_open, self.act_import, self.act_audio, self.act_options, self.act_base):
+            a.setEnabled(idle)
+        self.act_play.setEnabled(idle and has_video)
+        self.act_folder.setEnabled(idle and has_session)
+        self.act_process.setEnabled(idle and has_video)
+        self.act_package.setEnabled(idle and has_video)
+        self.act_prompt.setEnabled(idle and has_session)
+        self.act_cancel.setEnabled(busy)
+        self.btn_pause.setVisible(recording)
+        self.progress.setVisible(has_video)
+        self.stage_label.setVisible(has_video)
         self.btn_pause.setText("Retomar" if self.paused else "Pausar")
-        self.btn_process.setEnabled(has_video and not busy and not recording)
-        self.btn_cancel.setEnabled(busy)
-        self.btn_folder.setEnabled(has_session)
-        self.btn_play.setEnabled(has_video and not recording)
-        self.btn_package.setEnabled(has_video and not busy)
-        self.btn_prompt.setEnabled(has_session)
         self._refresh_guide()
         if self.session:
             s = self.session
-            self.session_label.setText(f"<b>{s.id}</b> · vídeo: {s.video_file or '—'}")
+            self.session_label.setText(f"Atividade: <b>{s.name}</b> · pasta {s.id} · vídeo: {s.video_file or 'ainda não gravado'}")
             self.progress.setValue(sum(st.status != StageStatus.PENDING for st in s.stages.values()))
-            self.stage_label.setText("  ".join(f"{STATUS_ICON[st.status]} {k}" for k, st in s.stages.items()))
+            self.stage_label.setText("  ".join(f"{STATUS_ICON[st.status]} {STAGE_NAMES[k]}" for k, st in s.stages.items()))
+        else:
+            self.session_label.setText("")
 
     # ---------- guia passo a passo ----------
 
@@ -301,15 +318,18 @@ class MainWindow(QMainWindow):
         s = self.session
         recording = self.capture is not None or self.obs is not None
         if s is None:
-            return 1, "Próximo: criar a sessão", "Dê um nome à sessão (ex.: emissão de boletos) e clique abaixo.", True
+            return 1, "Próximo: começar", "Escreva com suas palavras qual atividade você vai mostrar " \
+                "(ex.: baixar e arquivar as faturas do mês) e clique em Próximo.", True
         if recording:
             return 2, "Parar gravação", "Gravando: faça o trabalho falando em voz alta o que faz e por quê. " \
                 "F9 antes e depois de digitar senhas; Pausar se precisar interromper.", True
         if not s.video_file:
-            return 2, "Próximo: gravar a tela", "Clique para começar a gravar (o OBS abre escondido). " \
-                "Já tem um vídeo pronto? Use \"Importar vídeo…\" mais abaixo.", True
+            return 2, "Próximo: gravar a tela", "Ao clicar, a gravação começa: faça a atividade normalmente, " \
+                "explicando em voz alta o que faz e por quê. Já tem um vídeo pronto? Menu Atividade › " \
+                "Importar vídeo já gravado.", True
         if self.thread is not None:
-            return 3, "Processando…", "Transcrevendo, tirando as fotos e lendo o texto das telas. Aguarde.", False
+            return 3, "Processando… aguarde", "Transcrevendo, tirando as fotos e lendo o texto das telas. " \
+                "Os comandos ficam bloqueados até terminar (para cancelar: Ferramentas › Cancelar processamento).", False
         if not all(st.status in (StageStatus.DONE, StageStatus.SKIPPED) for st in s.stages.values()):
             return 3, "Próximo: processar a gravação", "Transforma o vídeo em transcrição, fotos dos cliques, " \
                 "texto das telas e o pacote para o Claude.", True
@@ -319,12 +339,11 @@ class MainWindow(QMainWindow):
         if not self.sent:
             return 5, "Próximo: enviar ao Claude", "Copia o prompt, mostra o arquivo do pacote e abre o Claude no " \
                 "navegador. Nada é enviado sozinho: você cola e anexa.", True
-        return 6, "Começar uma nova sessão", "Concluído! Cole a resposta do Claude onde precisar. " \
-            "Para documentar outro processo, comece uma nova sessão.", True
+        return 6, "Registrar outra atividade", "Concluído! Para mostrar outra atividade, clique abaixo.", True
 
     def _refresh_guide(self) -> None:
         step, text, hint, enabled = self._guide()
-        names = ["Sessão", "Gravar ou importar", "Processar", "Revisar", "Enviar ao Claude"]
+        names = ["Nomear a atividade", "Gravar", "Processar", "Revisar", "Enviar ao Claude"]
         parts = []
         for i, name in enumerate(names, start=1):
             label = f"{'✔' if i < step else i} {name}"
@@ -340,7 +359,7 @@ class MainWindow(QMainWindow):
         if step == 1:
             if not self.name.text().strip():
                 self.name.setFocus()
-                return self._error("Escreva um nome para a sessão no campo Nome.")
+                return self._error("Escreva qual atividade você vai mostrar (ex.: baixar as faturas do mês).")
             self._new_session()
         elif step == 2:
             self._toggle_record()
@@ -386,7 +405,6 @@ class MainWindow(QMainWindow):
         self.name.clear()
         self.name.setFocus()
         self.reviewed = self.sent = False
-        self.session_label.setText("Nenhuma sessão aberta")
         self.progress.setValue(0)
         self.stage_label.clear()
         self._refresh()
@@ -402,24 +420,25 @@ class MainWindow(QMainWindow):
     # ---------- ações ----------
 
     def _pick_base_dir(self) -> None:
-        d = QFileDialog.getExistingDirectory(self, "Pasta base", self.base_dir.text())
+        d = QFileDialog.getExistingDirectory(self, "Pasta onde as atividades são salvas", self.base_path)
         if d:
-            self.base_dir.setText(d)
+            self.base_path = d
+            self.settings.setValue("base_dir", d)
+            logging.getLogger("replayflow").info(f"atividades serão salvas em {d}")
 
     def _new_session(self) -> None:
         name = self.name.text().strip()
         if not name:
-            return self._error("Informe o nome da sessão.")
-        base = Path(self.base_dir.text())
-        self.settings.setValue("base_dir", str(base))
+            return self._error("Escreva qual atividade você vai mostrar.")
+        base = Path(self.base_path)
         config = self._config().model_copy(update={"input_offset_s": 0.0})  # não herda a sincronia da sessão anterior
         self.session = session_store.create_session(base, name, config)
         self.reviewed = self.sent = False
-        logging.getLogger("replayflow").info(f"sessão criada: {self.session.root}")
+        logging.getLogger("replayflow").info(f"atividade criada: {self.session.root}")
         self._refresh()
 
     def _open_session(self) -> None:
-        d = QFileDialog.getExistingDirectory(self, "Abrir sessão", self.base_dir.text())
+        d = QFileDialog.getExistingDirectory(self, "Abrir atividade gravada", self.base_path)
         if not d:
             return
         try:
@@ -431,16 +450,52 @@ class MainWindow(QMainWindow):
         self._load_config_into_form(self.session.config)
         self._refresh()
 
-    def _import_video(self) -> None:
+    def _import_dialog(self) -> None:
+        """Vídeo gravado fora do app: nomeia a atividade, copia o vídeo e já processa."""
         home = portable_home()  # portátil: abre nas gravações da própria pasta; depois, na última usada
-        start = self.settings.value("video_dir", str(home / "Gravacoes") if home else "")
-        f, _ = QFileDialog.getOpenFileName(self, "Vídeo gravado", start, "Vídeos (*.mkv *.mp4 *.mov *.flv *.webm)")
-        if f and self.session:
-            self.settings.setValue("video_dir", str(Path(f).parent))
-            self.session = session_store.import_video(self.session, Path(f))
-            self.reviewed = self.sent = False
-            logging.getLogger("replayflow").info(f"vídeo importado: {f}")
-            self._refresh()
+        d = QDialog(self)
+        d.setWindowTitle("Importar vídeo já gravado")
+        f = QFormLayout(d)
+        name = QLineEdit(self.name.text() if self.session is None else "",
+                         placeholderText="ex.: conferência do extrato bancário")
+        path = QLineEdit(readOnly=True)
+
+        def choose() -> None:
+            start = self.settings.value("video_dir", str(home / "Gravacoes") if home else "")
+            file, _ = QFileDialog.getOpenFileName(d, "Vídeo gravado", start, "Vídeos (*.mkv *.mp4 *.mov *.flv *.webm)")
+            if file:
+                path.setText(file)
+
+        pick = QPushButton("Escolher arquivo…")
+        pick.clicked.connect(choose)
+        row = QHBoxLayout()
+        row.addWidget(path, stretch=1)
+        row.addWidget(pick)
+        info = QLabel("O vídeo é copiado para uma nova atividade e processado em seguida. Vídeos de fora não têm "
+                      "cliques e teclas registrados: o pacote usa a fala e as imagens da tela.")
+        info.setWordWrap(True)
+        f.addRow("Que atividade aparece no vídeo?", name)
+        f.addRow("Arquivo", row)
+        f.addRow(info)
+        box = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
+        go = box.addButton("Importar e processar", QDialogButtonBox.ButtonRole.AcceptRole)
+        go.setEnabled(False)
+        for w in (name, path):
+            w.textChanged.connect(lambda _: go.setEnabled(bool(name.text().strip() and path.text())))
+        box.accepted.connect(d.accept)
+        box.rejected.connect(d.reject)
+        f.addRow(box)
+        d.setMinimumWidth(620)
+        if d.exec() != QDialog.DialogCode.Accepted:
+            return
+        self.settings.setValue("video_dir", str(Path(path.text()).parent))
+        self.name.setText(name.text().strip())
+        self._new_session()
+        assert self.session
+        self.session = session_store.import_video(self.session, Path(path.text()))
+        logging.getLogger("replayflow").info(f"vídeo importado: {path.text()}")
+        self.auto_flow = True
+        self._process()
 
     def _toggle_record(self) -> None:
         if self.capture or self.obs:
@@ -551,7 +606,7 @@ class MainWindow(QMainWindow):
         if level is not None and level < MIC_SILENT_DB:
             logging.getLogger("replayflow").warning(f"a trilha do microfone ficou praticamente muda ({level:.0f} dB)")
             self._error(f"O microfone \"{self.mic.currentText()}\" gravou silêncio ({level:.0f} dB).\n\n"
-                        "Escolha outro em Opções → Microfone (sua voz) e grave de novo, ou confira se ele não está no mudo.")
+                        "Escolha outro em Configurações › Áudio e grave de novo, ou confira se ele não está no mudo.")
 
     def _process(self, stages: tuple[Stage, ...] = tuple(Stage)) -> None:
         assert self.session
@@ -584,7 +639,7 @@ class MainWindow(QMainWindow):
         self._refresh()
 
     def _on_progress(self, stage: Stage, status: StageStatus | None) -> None:
-        self.stage_label.setText(f"{STATUS_ICON[status]} {stage}")
+        self.stage_label.setText(f"{STATUS_ICON[status]} {STAGE_NAMES[stage]}")
         if self.session:
             self.session = session_store.load(self.session.root)
             self.progress.setValue(sum(st.status != StageStatus.PENDING for st in self.session.stages.values()))
@@ -616,6 +671,11 @@ class MainWindow(QMainWindow):
             logging.getLogger("replayflow").info("prompt copiado; anexe export/claude_package.md no Claude")
 
     def closeEvent(self, event) -> None:  # type: ignore[no-untyped-def]
+        if self.thread is not None and QMessageBox.question(
+                self, "ReplayFlow", "O processamento ainda está em andamento. Sair mesmo assim? "
+                "Ele poderá ser retomado depois em Ferramentas › Processar / retomar.") != QMessageBox.StandardButton.Yes:
+            event.ignore()
+            return
         if self.capture or self.obs:
             self._stop_record()
         self._cancel()
