@@ -6,6 +6,7 @@ import logging
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 from dataclasses import dataclass
@@ -16,6 +17,9 @@ from replayflow.models import FrameMode, PipelineConfig
 from replayflow.services import imagehash
 
 log = logging.getLogger(__name__)
+
+# Sem isso cada chamada do FFmpeg abre e fecha uma janela de console quando a UI roda via pythonw.
+_NO_WINDOW: dict = {"creationflags": subprocess.CREATE_NO_WINDOW} if sys.platform == "win32" else {}
 
 _PTS_RE = re.compile(r"pts_time:\s*([0-9.]+)")
 
@@ -38,7 +42,7 @@ def _run(args: list[str], cancel: threading.Event | None = None) -> str:
     """Executa e devolve o stderr (onde o FFmpeg escreve showinfo). Cancela matando o processo."""
     log.info("executando %s", Path(args[0]).stem, extra={"cmd": args})
     proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                            encoding="utf-8", errors="replace")
+                            encoding="utf-8", errors="replace", **_NO_WINDOW)
     result: dict[str, str] = {}
     reader = threading.Thread(target=lambda: result.update(zip(("out", "err"), proc.communicate())))
     reader.start()
@@ -57,7 +61,7 @@ def _run(args: list[str], cancel: threading.Event | None = None) -> str:
 def probe_duration(video: Path) -> float:
     out = subprocess.run(
         [_bin("ffprobe"), "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(video)],
-        capture_output=True, text=True,
+        capture_output=True, text=True, **_NO_WINDOW,
     )
     try:
         return float(out.stdout.strip())
@@ -68,7 +72,7 @@ def probe_duration(video: Path) -> float:
 def audio_streams(video: Path) -> int:
     out = subprocess.run(
         [_bin("ffprobe"), "-v", "error", "-select_streams", "a", "-show_entries", "stream=index", "-of", "csv=p=0", str(video)],
-        capture_output=True, text=True,
+        capture_output=True, text=True, **_NO_WINDOW,
     )
     return len(out.stdout.split())
 
@@ -80,7 +84,7 @@ def has_audio(video: Path) -> bool:
 def video_width(video: Path) -> int:
     out = subprocess.run(
         [_bin("ffprobe"), "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width", "-of", "csv=p=0", str(video)],
-        capture_output=True, text=True,
+        capture_output=True, text=True, **_NO_WINDOW,
     )
     try:
         return int(out.stdout.split()[0])
@@ -212,7 +216,7 @@ def extract_frames(video: Path, frames_dir: Path, cfg: PipelineConfig,
 
 def version() -> str:
     try:
-        out = subprocess.run([_bin("ffmpeg"), "-version"], capture_output=True, text=True).stdout
+        out = subprocess.run([_bin("ffmpeg"), "-version"], capture_output=True, text=True, **_NO_WINDOW).stdout
         return out.splitlines()[0] if out else "desconhecida"
     except ToolMissingError:
         return "ausente"

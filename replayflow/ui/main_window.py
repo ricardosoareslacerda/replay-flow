@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import subprocess
+import sys
 import threading
 from pathlib import Path
 
@@ -81,6 +82,7 @@ class MainWindow(QMainWindow):
         self.obs_proc: subprocess.Popen[bytes] | None = None
         self.paused = False
         self.auto_flow = False
+        self.reviewed = self.sent = False  # passos 4 e 5 do guia, por sessão aberta
         self._build()
         self._wire_logging()
         self._apply_private_mode()
@@ -95,6 +97,23 @@ class MainWindow(QMainWindow):
         warning.setWordWrap(True)
         warning.setStyleSheet("background:#fff3cd;color:#664d03;padding:6px;border-radius:4px;")
         root.addWidget(warning)
+
+        # Guia "próximo, próximo": diz e executa a próxima ação. Os botões de baixo continuam para quem
+        # quiser seguir de qualquer ponto (ex.: importar um vídeo de fora ou reprocessar).
+        guide = QGroupBox("Passo a passo")
+        gl = QVBoxLayout(guide)
+        self.steps_label = QLabel()
+        self.steps_label.setTextFormat(Qt.TextFormat.RichText)
+        self.hint = QLabel()
+        self.hint.setWordWrap(True)
+        self.btn_next = QPushButton()
+        self.btn_next.setMinimumHeight(40)
+        self.btn_next.setStyleSheet("font-size:14px;font-weight:bold;")
+        self.btn_next.clicked.connect(self._next)
+        gl.addWidget(self.steps_label)
+        gl.addWidget(self.hint)
+        gl.addWidget(self.btn_next)
+        root.addWidget(guide)
 
         sess = QGroupBox("Sessão")
         form = QFormLayout(sess)
@@ -256,11 +275,109 @@ class MainWindow(QMainWindow):
         self.btn_play.setEnabled(has_video and not recording)
         self.btn_package.setEnabled(has_video and not busy)
         self.btn_prompt.setEnabled(has_session)
+        self._refresh_guide()
         if self.session:
             s = self.session
             self.session_label.setText(f"<b>{s.id}</b> · vídeo: {s.video_file or '—'}")
             self.progress.setValue(sum(st.status != StageStatus.PENDING for st in s.stages.values()))
             self.stage_label.setText("  ".join(f"{STATUS_ICON[st.status]} {k}" for k, st in s.stages.items()))
+
+    # ---------- guia passo a passo ----------
+
+    def _guide(self) -> tuple[int, str, str, bool]:
+        """(passo atual 1-5, texto do botão Próximo, dica, botão habilitado). Passo 6 = concluído."""
+        s = self.session
+        recording = self.capture is not None or self.obs is not None
+        if s is None:
+            return 1, "Próximo: criar a sessão", "Dê um nome à sessão (ex.: emissão de boletos) e clique abaixo.", True
+        if recording:
+            return 2, "Parar gravação", "Gravando: faça o trabalho falando em voz alta o que faz e por quê. " \
+                "F9 antes e depois de digitar senhas; Pausar se precisar interromper.", True
+        if not s.video_file:
+            return 2, "Próximo: gravar a tela", "Clique para começar a gravar (o OBS abre escondido). " \
+                "Já tem um vídeo pronto? Use \"Importar vídeo…\" mais abaixo.", True
+        if self.thread is not None:
+            return 3, "Processando…", "Transcrevendo, tirando as fotos e lendo o texto das telas. Aguarde.", False
+        if not all(st.status in (StageStatus.DONE, StageStatus.SKIPPED) for st in s.stages.values()):
+            return 3, "Próximo: processar a gravação", "Transforma o vídeo em transcrição, fotos dos cliques, " \
+                "texto das telas e o pacote para o Claude.", True
+        if not self.reviewed:
+            return 4, "Próximo: revisar o pacote", "Abre o pacote gerado. Confira se não há senhas, CPFs ou dados " \
+                "de clientes antes de enviar. \"Reproduzir vídeo\" mostra a gravação.", True
+        if not self.sent:
+            return 5, "Próximo: enviar ao Claude", "Copia o prompt, mostra o arquivo do pacote e abre o Claude no " \
+                "navegador. Nada é enviado sozinho: você cola e anexa.", True
+        return 6, "Começar uma nova sessão", "Concluído! Cole a resposta do Claude onde precisar. " \
+            "Para documentar outro processo, comece uma nova sessão.", True
+
+    def _refresh_guide(self) -> None:
+        step, text, hint, enabled = self._guide()
+        names = ["Sessão", "Gravar ou importar", "Processar", "Revisar", "Enviar ao Claude"]
+        parts = []
+        for i, name in enumerate(names, start=1):
+            label = f"{'✔' if i < step else i} {name}"
+            parts.append(f"<b><u>{label}</u></b>" if i == step else
+                         f"<span style='color:gray'>{label}</span>" if i > step else label)
+        self.steps_label.setText("  →  ".join(parts))
+        self.hint.setText(hint)
+        self.btn_next.setText(text)
+        self.btn_next.setEnabled(enabled)
+
+    def _next(self) -> None:
+        step = self._guide()[0]
+        if step == 1:
+            if not self.name.text().strip():
+                self.name.setFocus()
+                return self._error("Escreva um nome para a sessão no campo Nome.")
+            self._new_session()
+        elif step == 2:
+            self._toggle_record()
+        elif step == 3:
+            self._process()
+        elif step == 4:
+            self._review()
+        elif step == 5:
+            self._send_to_claude()
+        else:
+            self._start_over()
+
+    def _package_file(self) -> Path:
+        assert self.session
+        return self.session.root / "export" / "claude_package.md"
+
+    def _review(self) -> None:
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(self._package_file())))
+        self.reviewed = True
+        self._refresh()
+
+    def _send_to_claude(self) -> None:
+        """Só prepara: copia o prompt, seleciona o arquivo no Explorer e abre o Claude. O envio é do usuário."""
+        package = self._package_file()
+        self._copy_prompt()
+        if sys.platform == "win32":
+            subprocess.Popen(["explorer", "/select,", str(package)])
+        else:
+            self._open_folder()
+        QDesktopServices.openUrl(QUrl("https://claude.ai/new"))
+        QMessageBox.information(
+            self, "Enviar ao Claude",
+            "Abri o Claude no navegador e a pasta com o pacote.\n\n"
+            "1. Na conversa do Claude, cole o prompt (Ctrl+V). Ele já está copiado.\n"
+            "2. Arraste o arquivo claude_package.md (já selecionado na pasta) para a conversa.\n"
+            "3. Opcional: arraste também algumas fotos de clique da pasta frames.\n"
+            "4. Envie e aguarde a análise do fluxo.")
+        self.sent = True
+        self._refresh()
+
+    def _start_over(self) -> None:
+        self.session = None
+        self.name.clear()
+        self.name.setFocus()
+        self.reviewed = self.sent = False
+        self.session_label.setText("Nenhuma sessão aberta")
+        self.progress.setValue(0)
+        self.stage_label.clear()
+        self._refresh()
 
     def _apply_private_mode(self) -> None:
         network_guard.apply(self.chk_private.isChecked())
@@ -285,6 +402,7 @@ class MainWindow(QMainWindow):
         self.settings.setValue("base_dir", str(base))
         config = self._config().model_copy(update={"input_offset_s": 0.0})  # não herda a sincronia da sessão anterior
         self.session = session_store.create_session(base, name, config)
+        self.reviewed = self.sent = False
         logging.getLogger("replayflow").info(f"sessão criada: {self.session.root}")
         self._refresh()
 
@@ -297,6 +415,7 @@ class MainWindow(QMainWindow):
         except ReplayFlowError as e:
             return self._error(str(e))
         self.name.setText(self.session.name)
+        self.reviewed = self.sent = False
         self._load_config_into_form(self.session.config)
         self._refresh()
 
@@ -307,6 +426,7 @@ class MainWindow(QMainWindow):
         if f and self.session:
             self.settings.setValue("video_dir", str(Path(f).parent))
             self.session = session_store.import_video(self.session, Path(f))
+            self.reviewed = self.sent = False
             logging.getLogger("replayflow").info(f"vídeo importado: {f}")
             self._refresh()
 
@@ -399,6 +519,7 @@ class MainWindow(QMainWindow):
         self.capture = self.obs = None
         if video:
             self.session = session_store.import_video(self.session, video)
+            self.reviewed = self.sent = False
             logging.getLogger("replayflow").info(f"gravação finalizada e importada: {video}")
             self._check_mic(self.session.root / "raw" / self.session.video_file)  # type: ignore[operator]
             if self.chk_auto.isChecked():
@@ -460,18 +581,7 @@ class MainWindow(QMainWindow):
         logging.getLogger("replayflow").info("processamento concluído")
         if self.auto_flow:
             self.auto_flow = False
-            self._copy_prompt()
-            box = QMessageBox(QMessageBox.Icon.Information, "ReplayFlow",
-                              "Pacote para o Claude pronto.\n\nO prompt já foi copiado: cole numa conversa do Claude e "
-                              "anexe export\\claude_package.md (revise antes se houver dados sensíveis).", parent=self)
-            folder = box.addButton("Abrir pasta da sessão", QMessageBox.ButtonRole.AcceptRole)
-            play = box.addButton("Reproduzir vídeo", QMessageBox.ButtonRole.ActionRole)
-            box.addButton(QMessageBox.StandardButton.Close)
-            box.exec()
-            if box.clickedButton() is folder:
-                self._open_folder()
-            elif box.clickedButton() is play:
-                self._play_video()
+            logging.getLogger("replayflow").info("pacote pronto: siga o Passo a passo (revisar e enviar ao Claude)")
 
     def _on_failed(self, msg: str) -> None:
         self.auto_flow = False
