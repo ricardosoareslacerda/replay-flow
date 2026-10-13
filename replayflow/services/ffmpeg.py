@@ -94,6 +94,19 @@ def extract_audio(video: Path, wav: Path, cancel: threading.Event | None = None,
           "-ar", "16000", "-c:a", "pcm_s16le", str(wav)], cancel)
 
 
+_MEAN_RE = re.compile(r"mean_volume:\s*(-?[0-9.]+|-inf) dB")
+
+
+def mean_volume(video: Path, stream: int = 0) -> float | None:
+    """Volume médio (dB) de uma trilha de áudio; None se não houver a trilha."""
+    if audio_streams(video) <= stream:
+        return None
+    stderr = _run([_bin("ffmpeg"), "-hide_banner", "-i", str(video), "-map", f"0:a:{stream}",
+                   "-af", "volumedetect", "-f", "null", "-"])
+    m = _MEAN_RE.search(stderr)
+    return None if not m else float("-inf") if m.group(1) == "-inf" else float(m.group(1))
+
+
 _SILENCE_RE = re.compile(r"silence_(start|end):\s*(-?[0-9.]+)")
 
 

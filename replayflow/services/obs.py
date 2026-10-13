@@ -85,6 +85,14 @@ class ObsRecorder:
             log.warning("não foi possível separar as trilhas de áudio no OBS: %s", e)
             return False
 
+    def set_devices(self, mic_id: str, desktop_id: str) -> None:
+        """Escolhe qual microfone e qual saída de som o OBS grava ("default" = padrão do Windows)."""
+        special = self._client.get_special_inputs()
+        for name, device in ((special.mic1, mic_id), (special.desktop1, desktop_id)):
+            if name:
+                self._client.set_input_settings(name, {"device_id": device}, True)
+                self._client.set_input_mute(name, False)
+
     def start(self) -> float:
         """Inicia a gravação e devolve o instante (time.monotonic) em que o vídeo de fato começou."""
         self._client.start_record()
@@ -104,5 +112,15 @@ class ObsRecorder:
         self._client.resume_record()
 
     def stop(self) -> Path:
-        """Para a gravação e devolve o caminho do arquivo gerado pelo OBS."""
-        return Path(self._client.stop_record().output_path)
+        """Para a gravação e devolve o caminho do arquivo gerado pelo OBS, já fechado e completo."""
+        path = Path(self._client.stop_record().output_path)
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:  # StopRecord responde antes de o OBS terminar de gravar o arquivo
+            if not self._client.get_record_status().output_active:
+                try:
+                    with path.open("ab"):
+                        return path
+                except PermissionError:
+                    pass
+            time.sleep(0.2)
+        raise ReplayFlowError(f"O OBS não terminou de gravar {path.name} em 30s.")

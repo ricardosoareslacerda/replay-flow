@@ -94,3 +94,14 @@ def test_parse_sounds_ignores_blips_and_handles_no_silence() -> None:
 
     assert parse_sounds("silence_start: 0\nsilence_end: 5.0\nsilence_start: 5.1\n", duration=8.0) == []
     assert parse_sounds("", duration=2.0) == [(0.0, 2.0)]
+
+
+def test_mean_volume_parses_volumedetect(monkeypatch, tmp_path) -> None:
+    from replayflow.services import ffmpeg
+
+    monkeypatch.setattr(ffmpeg, "audio_streams", lambda v: 2)
+    monkeypatch.setattr(ffmpeg, "_bin", lambda n: n)
+    monkeypatch.setattr(ffmpeg, "_run", lambda args, cancel=None: "[Parsed_volumedetect_0] mean_volume: -91.0 dB\n")
+    assert ffmpeg.mean_volume(tmp_path / "v.mkv", stream=0) == -91.0
+    monkeypatch.setattr(ffmpeg, "audio_streams", lambda v: 0)
+    assert ffmpeg.mean_volume(tmp_path / "v.mkv", stream=0) is None

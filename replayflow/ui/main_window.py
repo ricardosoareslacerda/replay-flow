@@ -20,7 +20,7 @@ from replayflow.core.errors import CancelledError, ReplayFlowError
 from replayflow.core.pipeline import INPUT_EVENTS_FILE, Pipeline
 from replayflow.models import AppConfig, FrameMode, PipelineConfig, Session, Stage, StageStatus
 from replayflow.models.config import portable_home
-from replayflow.services import exporter
+from replayflow.services import audio_devices, exporter, ffmpeg
 from replayflow.services.input_capture import InputCapture
 
 LANGUAGES = {"pt-BR": "pt", "en": "en", "es": "es"}
@@ -28,6 +28,7 @@ MODELS = ["tiny", "base", "small", "medium", "large-v3"]
 FRAME_MODES = {"Ambos": FrameMode.BOTH, "Por tempo": FrameMode.INTERVAL, "Mudança de cena": FrameMode.SCENE}
 STATUS_ICON = {None: "⏳", StageStatus.DONE: "✅", StageStatus.SKIPPED: "➖", StageStatus.FAILED: "❌",
                StageStatus.PENDING: "○"}
+MIC_SILENT_DB = -80.0  # média abaixo disso = microfone mudo (um microfone vivo em sala quieta fica em torno de -70)
 WARNING = ("⚠ Gravações podem conter dados sensíveis (valores, CPFs, documentos). Tudo fica nesta máquina; "
            "use F9 para o modo sigiloso ao digitar senhas e revise o pacote antes de enviá-lo a qualquer IA.")
 
@@ -79,6 +80,7 @@ class MainWindow(QMainWindow):
         self.obs = None
         self.obs_proc: subprocess.Popen[bytes] | None = None
         self.paused = False
+        self.auto_flow = False
         self._build()
         self._wire_logging()
         self._apply_private_mode()
@@ -134,6 +136,14 @@ class MainWindow(QMainWindow):
         self.chk_keys = QCheckBox("Capturar teclas (F9 = modo sigiloso)", checked=True)
         self.chk_private = QCheckBox("Modo privado (bloqueia rede externa)", checked=True)
         self.chk_private.toggled.connect(self._apply_private_mode)
+        self.mic = self._device_combo(audio_devices.microphones(), "mic_device")
+        self.out = self._device_combo(audio_devices.outputs(), "out_device")
+        self.chk_auto = QCheckBox("Ao parar a gravação, processar e preparar o pacote para o Claude automaticamente",
+                                  checked=self.settings.value("auto_flow", True, type=bool))
+        self.chk_auto.toggled.connect(lambda on: self.settings.setValue("auto_flow", on))
+        of.addRow("Microfone (sua voz)", self.mic)
+        of.addRow("Som do computador", self.out)
+        of.addRow(self.chk_auto)
         of.addRow("Idioma", self.language)
         of.addRow("Modelo Whisper", self.model)
         of.addRow("Frames", self.frame_mode)
@@ -164,6 +174,7 @@ class MainWindow(QMainWindow):
         actions = QHBoxLayout()
         self.btn_process = self._button("Processar sessão", lambda: self._process(), actions)
         self.btn_cancel = self._button("Cancelar", self._cancel, actions)
+        self.btn_play = self._button("Reproduzir vídeo", self._play_video, actions)
         self.btn_folder = self._button("Abrir pasta da sessão", self._open_folder, actions)
         self.btn_package = self._button("Gerar pacote para Claude", self._package, actions)
         self.btn_prompt = self._button("Copiar prompt para Claude", self._copy_prompt, actions)
@@ -177,6 +188,16 @@ class MainWindow(QMainWindow):
         container.setLayout(root)
         self.setCentralWidget(container)
         self.resize(900, 760)
+
+    def _device_combo(self, devices: list[audio_devices.AudioDevice], key: str) -> QComboBox:
+        combo = QComboBox()
+        combo.addItem("Padrão do Windows", audio_devices.DEFAULT)
+        for d in devices:
+            combo.addItem(d.name, d.id)
+        saved = combo.findData(self.settings.value(key, audio_devices.DEFAULT))
+        combo.setCurrentIndex(max(saved, 0))
+        combo.currentIndexChanged.connect(lambda _: self.settings.setValue(key, combo.currentData()))
+        return combo
 
     @staticmethod
     def _button(text: str, slot, layout: QHBoxLayout) -> QPushButton:  # type: ignore[no-untyped-def]
@@ -232,6 +253,7 @@ class MainWindow(QMainWindow):
         self.btn_process.setEnabled(has_video and not busy and not recording)
         self.btn_cancel.setEnabled(busy)
         self.btn_folder.setEnabled(has_session)
+        self.btn_play.setEnabled(has_video and not recording)
         self.btn_package.setEnabled(has_video and not busy)
         self.btn_prompt.setEnabled(has_session)
         if self.session:
@@ -308,6 +330,8 @@ class MainWindow(QMainWindow):
                 self.capture.start()  # antes do OBS: nenhum clique se perde enquanto o vídeo arranca
             offset = 0.0
             if self.obs:
+                self.obs.set_devices(self.mic.currentData(), self.out.currentData())
+                log.info(f"microfone: {self.mic.currentText()} · som do computador: {self.out.currentText()}")
                 if self.obs.prepare_tracks():
                     log.info("áudio em trilhas separadas: 1 = microfone (narração), 2 = som do computador")
                 video_start = self.obs.start()
@@ -376,7 +400,24 @@ class MainWindow(QMainWindow):
         if video:
             self.session = session_store.import_video(self.session, video)
             logging.getLogger("replayflow").info(f"gravação finalizada e importada: {video}")
+            self._check_mic(self.session.root / "raw" / self.session.video_file)  # type: ignore[operator]
+            if self.chk_auto.isChecked():
+                logging.getLogger("replayflow").info("fluxo automático: processando e preparando o pacote para o Claude…")
+                self.auto_flow = True
+                self._process()
+                return
         self._refresh()
+
+    def _check_mic(self, video: Path) -> None:
+        """Avisa na hora se a trilha da voz saiu muda (microfone errado, no mudo ou sem volume)."""
+        try:
+            level = ffmpeg.mean_volume(video, stream=0)
+        except ReplayFlowError:
+            return
+        if level is not None and level < MIC_SILENT_DB:
+            logging.getLogger("replayflow").warning(f"a trilha do microfone ficou praticamente muda ({level:.0f} dB)")
+            self._error(f"O microfone \"{self.mic.currentText()}\" gravou silêncio ({level:.0f} dB).\n\n"
+                        "Escolha outro em Opções → Microfone (sua voz) e grave de novo, ou confira se ele não está no mudo.")
 
     def _process(self, stages: tuple[Stage, ...] = tuple(Stage)) -> None:
         assert self.session
@@ -417,10 +458,30 @@ class MainWindow(QMainWindow):
     def _on_finished(self, session: Session) -> None:
         self._end_worker()
         logging.getLogger("replayflow").info("processamento concluído")
+        if self.auto_flow:
+            self.auto_flow = False
+            self._copy_prompt()
+            box = QMessageBox(QMessageBox.Icon.Information, "ReplayFlow",
+                              "Pacote para o Claude pronto.\n\nO prompt já foi copiado: cole numa conversa do Claude e "
+                              "anexe export\\claude_package.md (revise antes se houver dados sensíveis).", parent=self)
+            folder = box.addButton("Abrir pasta da sessão", QMessageBox.ButtonRole.AcceptRole)
+            play = box.addButton("Reproduzir vídeo", QMessageBox.ButtonRole.ActionRole)
+            box.addButton(QMessageBox.StandardButton.Close)
+            box.exec()
+            if box.clickedButton() is folder:
+                self._open_folder()
+            elif box.clickedButton() is play:
+                self._play_video()
 
     def _on_failed(self, msg: str) -> None:
+        self.auto_flow = False
         self._end_worker()
         self._error(msg)
+
+    def _play_video(self) -> None:
+        """Abre a gravação no player padrão do Windows."""
+        if self.session and self.session.video_file:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.session.root / "raw" / self.session.video_file)))
 
     def _open_folder(self) -> None:
         if self.session:
