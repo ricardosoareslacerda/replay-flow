@@ -64,7 +64,7 @@ def transcribe(wav: Path, model_name: str, language: str, offline: bool,
             raise CancelledError()
         segments.append(Segment(start=s.start, end=s.end, text=s.text.strip(),
                                 confidence=round(math.exp(s.avg_logprob), 3)))
-    log.info("transcrição concluída", extra={"segments": len(segments), "duration": info.duration})
+    log.info("%d trechos transcritos", len(segments), extra={"segments": len(segments), "duration": info.duration})
     return segments
 
 

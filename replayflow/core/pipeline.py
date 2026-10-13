@@ -11,7 +11,7 @@ from replayflow.core import logging_setup, session_store, timeline_store
 from replayflow.core.errors import CancelledError, ReplayFlowError
 from replayflow.core.layout import SessionLayout
 from replayflow.models import Session, Stage, StageStatus, TimelineEvent
-from replayflow.services import ffmpeg, ocr, transcriber
+from replayflow.services import exporter, ffmpeg, ocr, transcriber
 
 log = logging.getLogger(__name__)
 
@@ -34,7 +34,7 @@ class Pipeline:
             raise ReplayFlowError("A sessão não tem vídeo. Importe uma gravação primeiro.")
         return self.layout.raw / self.session.video_file
 
-    def run(self, stages: tuple[Stage, ...] = (Stage.AUDIO, Stage.TRANSCRIPT, Stage.FRAMES, Stage.OCR, Stage.INPUT)) -> Session:
+    def run(self, stages: tuple[Stage, ...] = tuple(Stage)) -> Session:
         handler = logging_setup.attach_session_log(self.layout.pipeline_log)
         try:
             if self.session.duration_s is None:
@@ -50,28 +50,28 @@ class Pipeline:
         self.session = session
 
     def _run_stage(self, stage: Stage) -> None:
-        if self.session.is_done(stage):
-            log.info("etapa já concluída, pulando", extra={"stage": stage})
+        if stage != Stage.EXPORT and self.session.is_done(stage):  # export sempre reflete o estado atual
+            log.info("[%s] já concluída, pulando", stage, extra={"stage": stage})
             self._progress(stage, self.session.stages[stage].status)
             return
         if self.cancel.is_set():
             raise CancelledError()
         self._progress(stage, None)
-        log.info("etapa iniciada", extra={"stage": stage})
+        log.info("[%s] iniciada", stage, extra={"stage": stage})
         try:
             ran = getattr(self, f"_stage_{stage.value}")()
         except CancelledError:
-            log.warning("etapa cancelada", extra={"stage": stage})
+            log.warning("[%s] cancelada", stage, extra={"stage": stage})
             raise
         except ReplayFlowError as e:
             self.session = session_store.mark_stage(self.session, stage, StageStatus.FAILED, str(e))
             self._progress(stage, StageStatus.FAILED)
-            log.error("etapa falhou", extra={"stage": stage, "error": str(e)})
+            log.error("[%s] falhou: %s", stage, e, extra={"stage": stage})
             raise
         status = StageStatus.DONE if ran else StageStatus.SKIPPED
         self.session = session_store.mark_stage(self.session, stage, status)
         self._progress(stage, status)
-        log.info("etapa concluída", extra={"stage": stage, "status": status})
+        log.info("[%s] %s", stage, status, extra={"stage": stage, "status": status})
 
     # Cada etapa retorna False quando desativada pela config (SKIPPED).
 
@@ -130,3 +130,11 @@ class Pipeline:
         for source in ("mouse", "key", "window"):
             timeline_store.write_source(self.layout.timeline, source, [e for e in events if e.source == source])
         return True
+
+    def _stage_export(self) -> bool:
+        exporter.export(self.session, tool_versions())
+        return True
+
+
+def tool_versions() -> dict[str, str]:
+    return {"ffmpeg": ffmpeg.version(), "faster_whisper": transcriber.version(), "tesseract": ocr.version()}
