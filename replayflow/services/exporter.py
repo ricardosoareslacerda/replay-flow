@@ -14,6 +14,7 @@ from replayflow.core import timeline_store
 from replayflow.core.redact import redact
 from replayflow.core.layout import SessionLayout
 from replayflow.models import Session, Stage, StageStatus, TimelineEvent
+from replayflow.services import verify
 from replayflow.services.transcriber import mmss
 
 OCR_EXCERPT_CHARS = 1500
@@ -208,7 +209,8 @@ def _transcript_lines(events: list[TimelineEvent]) -> list[str]:
     return [f"- **[{mmss(e.t)}]** {e.data['text']}" for e in events if e.source == "transcript"]
 
 
-def build_package(session: Session, steps: list[Step], events: list[TimelineEvent]) -> str:
+def build_package(session: Session, steps: list[Step], events: list[TimelineEvent],
+                  check: verify.Report | None = None) -> str:
     cfg = session.config
     done = ", ".join(f"{k.value}={v.status.value}" for k, v in session.stages.items() if v.status != StageStatus.PENDING)
     out = [
@@ -255,6 +257,13 @@ def build_package(session: Session, steps: list[Step], events: list[TimelineEven
         "palavras coladas): corrija pelo contexto e prefira a narração e o rótulo do clique quando divergirem.",
         "- Para conferir algo, cruze pelo tempo: a fala em 00:19 explica o clique em 00:19, que aparece na foto "
         "do clique e no OCR daquele passo. Se as fotos forem anexadas, o nome do arquivo está no título do passo.",
+        "",
+        "## Verificação vídeo × transcrição",
+        "",
+        "Conferência automática entre o que foi dito e o que apareceu na tela (detalhes em `verificacao.md`). "
+        "Quando a fala e a tela divergirem num nome, prefira a forma vista na tela.",
+        "",
+        *verify.summary_lines(check or verify.check(events)),
         "",
         "## Roteiro passo a passo",
         "",
@@ -321,7 +330,11 @@ def export(session: Session, versions: dict[str, str]) -> list[Path]:
     package = layout.export / "claude_package.md"
     manifest = layout.export / "manifest.json"
     write_frames_index(steps, index)
-    text = build_package(session, steps, events)
+    check = verify.check(events)
+    text = build_package(session, steps, events, check)
+    verification = layout.export / "verificacao.md"
+    vtext = verify.to_markdown(check, session.name)
+    verification.write_text(redact(vtext)[0] if session.config.redact_sensitive else vtext, encoding="utf-8")
     if session.config.redact_sensitive:
         text, masked = redact(text)
         if masked:
@@ -331,4 +344,4 @@ def export(session: Session, versions: dict[str, str]) -> list[Path]:
     package.write_text(text, encoding="utf-8")
     manifest.write_text(json.dumps(build_manifest(session, layout, steps, versions), ensure_ascii=False, indent=2),
                         encoding="utf-8")
-    return [package, manifest, index]
+    return [package, manifest, index, verification]
