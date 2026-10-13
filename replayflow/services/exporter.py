@@ -29,7 +29,13 @@ ANALYSIS_REQUESTS = (
     "Riscos, validações e pontos de atenção.",
     "Pseudo-código ou especificação de RPA.",
     "Perguntas que precisam ser esclarecidas antes de automatizar.",
+    "Padrões repetitivos (nomes de arquivo, pastas, dados copiados e colados, telas visitadas) e como padronizá-los.",
+    "Tempo gasto em cada etapa (pelos timestamps) e onde está o maior desperdício de tempo.",
+    "Versão otimizada do processo: passos a eliminar, atalhos, ordem melhor e o que pode ser feito em lote.",
+    "Plano de ação priorizado por economia de tempo × esforço, começando pelos ganhos rápidos.",
 )
+OBJECTIVE = ("Objetivo: capturar o fluxo e os padrões deste trabalho para otimizar o processo, economizar tempo "
+             "e ganhar a máxima agilidade, seja ajustando a forma de fazer, seja automatizando.")
 
 
 @dataclass
@@ -67,7 +73,8 @@ def describe_action(e: TimelineEvent, target: str = "") -> str:
         case "key", "secret":
             return f"digitou [SEGREDO: {e.data['chars']} caracteres]"
         case "key", "hotkey":
-            return f"atalho {e.data['keys']}"
+            pasted = f" (colou \"{e.data['pasted']}\")" if e.data.get("pasted") else ""
+            return f"atalho {e.data['keys']}{pasted}"
         case "key", "special":
             return f"tecla {e.data['key']}"
         case "key", "secret_mode":
@@ -122,6 +129,20 @@ def _describe(step: Step, a: TimelineEvent) -> str:
 
 def _same_screen(a: str, b: str) -> bool:
     return bool(a) and bool(b) and difflib.SequenceMatcher(None, a, b).ratio() > 0.8
+
+
+def _new_lines(text: str, previous: str, limit: int = 15) -> list[str]:
+    """Linhas que apareceram na tela desde o passo anterior (ex.: um aviso "já existe, deseja substituir?")."""
+    def norm(line: str) -> str:
+        return " ".join(line.split())
+
+    seen = [norm(line) for line in previous.splitlines()]
+    new = []
+    for line in map(norm, text.splitlines()):
+        # OCR lê a mesma linha com pequenas variações; só conta como nova se não houver parecida antes
+        if len(line) > 3 and not difflib.get_close_matches(line, seen, n=1, cutoff=0.8):
+            new.append(line)
+    return new[:limit]
 
 
 def _script_lines(steps: list[Step]) -> list[str]:
@@ -209,7 +230,11 @@ def build_package(session: Session, steps: list[Step], events: list[TimelineEven
         "## Instruções para análise",
         "",
         "Você está analisando a gravação de um fluxo de trabalho real. Use a narração, as ações registradas "
-        "(cliques, texto digitado, janelas) e o OCR das telas. Produza:",
+        "(cliques, texto digitado e colado, janelas) e o OCR das telas.",
+        "",
+        f"**{OBJECTIVE}**",
+        "",
+        "Produza:",
         "",
         *[f"{i}. {req}" for i, req in enumerate(ANALYSIS_REQUESTS, start=1)],
         "",
@@ -244,7 +269,7 @@ def build_package(session: Session, steps: list[Step], events: list[TimelineEven
         "## Passos relevantes",
         "",
         "Passos sem ação, fala ou mudança de tela ficam só no índice do final (por isso a numeração pula). "
-        "O OCR é o texto lido da tela inteira; quando a tela é a mesma do passo anterior, ele não é repetido.",
+        "O OCR é o texto lido da tela inteira; quando a tela é quase a mesma do passo anterior, aparecem só as linhas novas.",
         "",
     ]
     last_ocr, last_ocr_step = "", 0
@@ -256,10 +281,15 @@ def build_package(session: Session, steps: list[Step], events: list[TimelineEven
             out += [f"**Narração:** {s.narration}", ""]
         if s.actions:
             out += ["**Ações:**", *[f"- [{mmss(a.t)}] {_describe(s, a)}" for a in s.actions], ""]
+        if near := s.frame.data.get("near"):
+            out += ["**Texto perto do clique** (caixa de diálogo, campo ou botão em volta do ponto):", "",
+                    "```text", near, "```", ""]
         if s.ocr and s.ocr.data["text"]:
             text = s.ocr.data["text"]
             if _same_screen(text, last_ocr):
-                out += [f"_Tela igual à do passo {last_ocr_step} (OCR omitido)._", ""]
+                new = _new_lines(text, last_ocr)
+                out += ([f"**O que mudou na tela** (em relação ao passo {last_ocr_step}):", "", "```text", *new, "```", ""]
+                        if new else [f"_Tela igual à do passo {last_ocr_step} (OCR omitido)._", ""])
             else:
                 cut = text[:OCR_EXCERPT_CHARS] + (" [...]" if len(text) > OCR_EXCERPT_CHARS else "")
                 out += ["**OCR da tela:**", "", "```text", cut, "```", ""]
@@ -276,6 +306,7 @@ def build_prompt(session: Session) -> str:
     return (
         f"Anexei o arquivo claude_package.md da sessão \"{session.name}\" ({mmss(session.duration_s or 0)}), "
         "gerado localmente a partir da gravação de tela, narração, OCR e ações registradas.\n"
+        f"{OBJECTIVE}\n"
         f"Com base nele, produza:\n{items}\n"
         "Cite passo e timestamp para cada conclusão e liste o que precisa ser confirmado comigo."
     )

@@ -81,3 +81,17 @@ def test_capture_pause_drops_events_and_discounts_paused_time(tmp_path, monkeypa
     lines = (tmp_path / "events.jsonl").read_text(encoding="utf-8").splitlines()
     import json
     assert [(json.loads(l)["t"], json.loads(l)["data"]["x"]) for l in lines] == [(2.0, 1), (3.0, 3)]
+
+
+def test_paste_records_clipboard_text_but_not_in_secret_mode() -> None:
+    events: list[TimelineEvent] = []
+    rec = InputRecorder(events.append, window_title=lambda: "Salvar como", clipboard=lambda: "fatura_lopes_ricardo_202610.pdf")
+    rec.on_press(1.0, "ctrl_l", None)
+    rec.on_press(1.1, "", "v")
+    rec.on_release("ctrl_l")
+    rec.on_press(2.0, "f9", None)
+    rec.on_press(2.1, "ctrl_l", None)
+    rec.on_press(2.2, "", "v")
+
+    hotkeys = [e.data for e in events if e.kind == "hotkey"]
+    assert hotkeys == [{"keys": "ctrl+v", "pasted": "fatura_lopes_ricardo_202610.pdf"}, {"keys": "ctrl+?"}]

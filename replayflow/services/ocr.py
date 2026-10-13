@@ -80,6 +80,22 @@ def text_at(image: Path, x: float, y: float, lang: str, half_w: int = 260, half_
     return label[:80]
 
 
+def text_near(image: Path, x: float, y: float, lang: str, half_w: int = 260, half_h: int = 90) -> str:
+    """Texto da região em volta do clique: pega caixas de diálogo e campos que o OCR da tela inteira perde."""
+    from PIL import Image
+
+    tess = _pytesseract()
+    with Image.open(image) as img:
+        box = (max(0, int(x) - half_w), max(0, int(y) - half_h), min(img.width, int(x) + half_w), min(img.height, int(y) + half_h))
+        crop = prepare(img.crop(box))
+    try:
+        text = tess.image_to_string(crop, lang=lang, config="--psm 6")
+    except tess.TesseractError:
+        return ""
+    lines = [" ".join(line.split()) for line in text.splitlines()]
+    return "\n".join(line for line in lines if _looks_like_label(line))
+
+
 def _line_at(tess, img, lang: str, config: str, cx: float, cy: float) -> str:  # type: ignore[no-untyped-def]
     try:
         data = tess.image_to_data(img, lang=lang, config=config, output_type=tess.Output.DICT)

@@ -141,10 +141,10 @@ class Pipeline:
             ffmpeg.extract_frame_at(self.video, c.t - CLICK_LEAD_S, out, cfg, self.cancel)
             if not out.exists():  # clique depois do fim do vídeo
                 continue
-            target = self._click_target(out, c.data["x"] * scale, c.data["y"] * scale)  # antes de desenhar o círculo
+            target, near = self._click_target(out, c.data["x"] * scale, c.data["y"] * scale)  # antes do círculo
             click_marker.mark(out, c.data["x"], c.data["y"], scale, cfg.jpg_quality)
             events.append(TimelineEvent(t=c.t, source="frame", kind="click", data={
-                "file": out.name, "scene_change": False, "click": {"x": c.data["x"], "y": c.data["y"]}, "target": target}))
+                "file": out.name, "scene_change": False, "click": {"x": c.data["x"], "y": c.data["y"]}, "target": target, "near": near}))
         log.info("fotos de clique geradas: %d", len(events))
         return events
 
@@ -162,16 +162,16 @@ class Pipeline:
         ])
         return True
 
-    def _click_target(self, image: Path, x: float, y: float) -> str:
-        """Rótulo em que o usuário clicou (ex.: "Ver alterações"), lido por OCR em volta do ponto."""
+    def _click_target(self, image: Path, x: float, y: float) -> tuple[str, str]:
+        """(rótulo em que o usuário clicou, texto da região em volta), lidos por OCR antes de marcar o ponto."""
         cfg = self.session.config
         if not cfg.ocr_enabled:
-            return ""
+            return "", ""
         try:
-            return ocr.text_at(image, x, y, cfg.ocr_lang)
+            return ocr.text_at(image, x, y, cfg.ocr_lang), ocr.text_near(image, x, y, cfg.ocr_lang)
         except ReplayFlowError as e:  # sem Tesseract: a etapa de OCR avisará; a foto do clique segue sem rótulo
             log.warning("rótulo do clique indisponível: %s", e)
-            return ""
+            return "", ""
 
     def _stage_input(self) -> bool:
         if not (self.layout.raw / INPUT_EVENTS_FILE).exists():

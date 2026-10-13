@@ -120,3 +120,9 @@ def test_words_split_narration_and_click_label_names_the_target() -> None:
     assert exporter._script_lines(steps)[1] == (
         '2. **[00:04]** [janela: Portal do banco] clique esquerdo em "Emitir boleto" (posição 10, 20)'
         ' — fala: "clico em emitir"')
+
+def test_new_lines_shows_only_what_appeared_on_screen() -> None:
+    before = "Salvar como\nNome: fatura_lopes_ricardo_202609.pdf\nSalvar Cancelar"
+    after = "Salvar como\nNome: fatura_lopes_ricardo_202609.pdf\nSalvar Cancelar\nfatura_lopes_ricardo_202610.pdf já existe. Deseja substituí-lo?"
+
+    assert exporter._new_lines(after, before) == ["fatura_lopes_ricardo_202610.pdf já existe. Deseja substituí-lo?"]

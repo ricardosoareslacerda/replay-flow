@@ -33,12 +33,46 @@ def active_window_title() -> str | None:
     return buf.value or None
 
 
+CLIPBOARD_MAX_CHARS = 300
+
+
+def clipboard_text() -> str | None:
+    """Texto da área de transferência (Windows), lido no Ctrl+V para registrar O QUE foi colado."""
+    if sys.platform != "win32":
+        return None
+    import ctypes
+
+    user32, kernel32 = ctypes.windll.user32, ctypes.windll.kernel32
+    user32.GetClipboardData.restype = ctypes.c_void_p
+    kernel32.GlobalLock.restype = ctypes.c_void_p
+    kernel32.GlobalLock.argtypes = kernel32.GlobalUnlock.argtypes = [ctypes.c_void_p]
+    for _ in range(3):  # outro programa pode estar com a área de transferência aberta
+        if user32.OpenClipboard(None):
+            break
+        time.sleep(0.02)
+    else:
+        return None
+    try:
+        handle = user32.GetClipboardData(13)  # CF_UNICODETEXT
+        if not handle:
+            return None
+        ptr = kernel32.GlobalLock(handle)
+        try:
+            return ctypes.wstring_at(ptr) if ptr else None
+        finally:
+            kernel32.GlobalUnlock(handle)
+    finally:
+        user32.CloseClipboard()
+
+
 class InputRecorder:
     """Regras de agregação, sem dependência de pynput (testável)."""
 
     def __init__(self, emit: Callable[[TimelineEvent], None], secret_key: str = "f9",
-                 window_title: Callable[[], str | None] = active_window_title) -> None:
+                 window_title: Callable[[], str | None] = active_window_title,
+                 clipboard: Callable[[], str | None] = clipboard_text) -> None:
         self._emit = emit
+        self._clipboard = clipboard
         self._secret_key = secret_key
         self._window_title = window_title
         self._last_window: str | None = None
@@ -86,7 +120,13 @@ class InputRecorder:
         if self._modifiers and (key or (char is not None and char.isalnum())):
             self.flush(t)
             name = (char or key).lower() if not self._secret else "?"
-            self._event(t, "key", "hotkey", keys="+".join([*sorted(self._modifiers), name]))
+            keys = "+".join([*sorted(self._modifiers), name])
+            data: dict[str, object] = {"keys": keys}
+            if keys in ("ctrl+v", "shift+insert") and not self._secret:  # no modo sigiloso o colado não é lido
+                pasted = " ".join((self._clipboard() or "").split())
+                if pasted:
+                    data["pasted"] = pasted[:CLIPBOARD_MAX_CHARS]
+            self._event(t, "key", "hotkey", **data)
             return
         if char:
             if not self._buffer:
