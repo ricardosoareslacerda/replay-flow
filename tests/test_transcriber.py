@@ -26,11 +26,11 @@ def test_gpu_error_falls_back_to_cpu(monkeypatch, tmp_path) -> None:
             self.device = device
             devices.append(device)
 
-        def transcribe(self, wav, language, vad_filter):
+        def transcribe(self, wav, language, vad_filter, word_timestamps=False):
             def gen():
                 if self.device == "cuda":
                     raise RuntimeError("Library cublas64_12.dll is not found or cannot be loaded")
-                yield types.SimpleNamespace(start=0.0, end=1.0, text=" testando ", avg_logprob=0.0)
+                yield types.SimpleNamespace(start=0.0, end=1.0, text=" testando ", avg_logprob=0.0, words=[])
             return gen(), types.SimpleNamespace(duration=1.0)
 
     monkeypatch.setitem(sys.modules, "faster_whisper", types.SimpleNamespace(WhisperModel=FakeModel))

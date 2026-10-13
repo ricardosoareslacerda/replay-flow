@@ -9,6 +9,7 @@ from pathlib import Path
 
 from replayflow.core.errors import CancelledError, ReplayFlowError, ToolMissingError
 
+MIN_LABEL_CONF = 70  # abaixo disso o "rótulo" costuma ser ícone lido como letras (ex.: "EEB -")
 _WINDOWS_DEFAULT = Path(r"C:\Program Files\Tesseract-OCR\tesseract.exe")
 
 
@@ -45,6 +46,47 @@ def run(frames: list[Path], ocr_dir: Path, lang: str, cancel: threading.Event | 
         (ocr_dir / f"{frame.stem}.txt").write_text(text, encoding="utf-8")
         texts[frame] = text
     return texts
+
+
+def text_at(image: Path, x: float, y: float, lang: str, half_w: int = 260, half_h: int = 50) -> str:
+    """Texto da linha da tela mais próxima do ponto (x, y) da imagem: o rótulo em que o usuário clicou."""
+    from PIL import Image
+
+    tess = _pytesseract()
+    with Image.open(image) as img:
+        left, top = max(0, int(x) - half_w), max(0, int(y) - half_h)
+        crop = img.crop((left, top, min(img.width, int(x) + half_w), min(img.height, int(y) + half_h)))
+        crop = crop.resize((crop.width * 2, crop.height * 2))  # texto de interface é pequeno; ampliar ajuda o OCR
+        try:
+            data = tess.image_to_data(crop, lang=lang, config="--psm 11", output_type=tess.Output.DICT)
+        except tess.TesseractError:
+            return ""
+    cx, cy = (x - left) * 2, (y - top) * 2
+    lines: dict[tuple[int, int, int], list[int]] = {}
+    for i, word in enumerate(data["text"]):
+        if word.strip() and float(data["conf"][i]) > 30:
+            lines.setdefault((data["block_num"][i], data["par_num"][i], data["line_num"][i]), []).append(i)
+    best, best_d = "", float("inf")
+    for idx in lines.values():
+        x0 = min(data["left"][i] for i in idx)
+        x1 = max(data["left"][i] + data["width"][i] for i in idx)
+        y0 = min(data["top"][i] for i in idx)
+        y1 = max(data["top"][i] + data["height"][i] for i in idx)
+        dx = max(x0 - cx, 0, cx - x1)
+        dy = max(y0 - cy, 0, cy - y1)
+        d = dx + 3 * dy  # prioriza a mesma linha do clique
+        text = " ".join(data["text"][i] for i in idx)
+        conf = sum(float(data["conf"][i]) for i in idx) / len(idx)
+        if d < best_d and conf >= MIN_LABEL_CONF and _looks_like_label(text):
+            best, best_d = text, d
+    return best.strip()[:80]
+
+
+def _looks_like_label(text: str) -> bool:
+    """Descarta ruído de ícones ('(O)', 'a]'): exige uma palavra de verdade."""
+    chars = [c for c in text if not c.isspace()]
+    return any(sum(c.isalpha() for c in w) >= 3 for w in text.split()) and (
+        sum(c.isalnum() for c in chars) >= 0.6 * len(chars))
 
 
 def version() -> str:

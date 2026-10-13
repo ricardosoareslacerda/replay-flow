@@ -109,7 +109,7 @@ class Pipeline:
         transcriber.write_outputs(segments, self.layout.transcript, self.session.name)
         timeline_store.write_source(self.layout.timeline, "transcript", [
             TimelineEvent(t=s.start, source="transcript", kind="segment",
-                          data={"end": s.end, "text": s.text, "confidence": s.confidence})
+                          data={"end": s.end, "text": s.text, "confidence": s.confidence, "words": s.words})
             for s in segments
         ])
         return True
@@ -141,9 +141,10 @@ class Pipeline:
             ffmpeg.extract_frame_at(self.video, c.t - CLICK_LEAD_S, out, cfg, self.cancel)
             if not out.exists():  # clique depois do fim do vídeo
                 continue
+            target = self._click_target(out, c.data["x"] * scale, c.data["y"] * scale)  # antes de desenhar o círculo
             click_marker.mark(out, c.data["x"], c.data["y"], scale, cfg.jpg_quality)
             events.append(TimelineEvent(t=c.t, source="frame", kind="click", data={
-                "file": out.name, "scene_change": False, "click": {"x": c.data["x"], "y": c.data["y"]}}))
+                "file": out.name, "scene_change": False, "click": {"x": c.data["x"], "y": c.data["y"]}, "target": target}))
         log.info("fotos de clique geradas: %d", len(events))
         return events
 
@@ -160,6 +161,17 @@ class Pipeline:
             for e, f in zip(frame_events, frames)
         ])
         return True
+
+    def _click_target(self, image: Path, x: float, y: float) -> str:
+        """Rótulo em que o usuário clicou (ex.: "Ver alterações"), lido por OCR em volta do ponto."""
+        cfg = self.session.config
+        if not cfg.ocr_enabled:
+            return ""
+        try:
+            return ocr.text_at(image, x, y, cfg.ocr_lang)
+        except ReplayFlowError as e:  # sem Tesseract: a etapa de OCR avisará; a foto do clique segue sem rótulo
+            log.warning("rótulo do clique indisponível: %s", e)
+            return ""
 
     def _stage_input(self) -> bool:
         if not (self.layout.raw / INPUT_EVENTS_FILE).exists():

@@ -87,7 +87,8 @@ def test_claude_package(session: Session) -> None:
     assert "**Data/hora:** 13/10/2026 09:30" in md
     assert "**Duração do vídeo:** 00:20" in md
     assert "- **[00:01]** Abro o boleto." in md
-    assert "### Passo 2 [00:10 - 00:20] `frame_000002.jpg` (mudança de tela)" in md
+    assert "### Passo 2 [00:10 - 00:20] Tela · `frame_000002.jpg` (mudança de tela)" in md
+    assert "## Roteiro passo a passo" in md and "2. **[00:10]** [janela: Adobe Reader] digitou [SEGREDO: 5 caracteres]; tecla enter" in md
     assert "Senha do PDF:" in md
     assert "[SEGREDO: 5 caracteres]" in md
     for request in exporter.ANALYSIS_REQUESTS:
@@ -98,3 +99,24 @@ def test_prompt_mentions_package(session: Session) -> None:
     prompt = exporter.build_prompt(session)
 
     assert "claude_package.md" in prompt and "Automação boletos" in prompt
+
+
+def test_words_split_narration_and_click_label_names_the_target() -> None:
+    events = [
+        TimelineEvent(t=0.0, source="frame", kind="captured", data={"file": "frame_000001.jpg", "scene_change": False}),
+        TimelineEvent(t=0.5, source="transcript", kind="segment", data={
+            "end": 6.0, "text": "abro o portal clico em emitir",
+            "words": [[0.5, 0.8, "abro"], [0.9, 1.0, "o"], [1.1, 1.6, "portal"], [4.2, 4.5, "clico"],
+                      [4.6, 4.7, "em"], [4.8, 5.3, "emitir"]]}),
+        TimelineEvent(t=4.0, source="frame", kind="click", data={
+            "file": "click_000001.jpg", "scene_change": False, "click": {"x": 10, "y": 20}, "target": "Emitir boleto"}),
+        TimelineEvent(t=4.0, source="mouse", kind="click", data={"x": 10, "y": 20, "button": "left"}),
+        TimelineEvent(t=4.0, source="window", kind="focus", data={"title": "Portal do banco"}),
+    ]
+    steps = exporter.build_steps(sorted(events, key=lambda e: (e.t, e.source)), 8.0)
+
+    assert [s.narration for s in steps] == ["abro o portal", "clico em emitir"]
+    assert [a.source for a in steps[1].actions] == ["window", "mouse"]
+    assert exporter._script_lines(steps)[1] == (
+        '2. **[00:04]** [janela: Portal do banco] clique esquerdo em "Emitir boleto" (posição 10, 20)'
+        ' — fala: "clico em emitir"')

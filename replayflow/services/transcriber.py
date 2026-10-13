@@ -25,6 +25,7 @@ class Segment(BaseModel):
     end: float
     text: str
     confidence: float | None = None
+    words: list[tuple[float, float, str]] = []  # (início, fim, palavra): distribui a fala pelos passos
 
 
 def mmss(seconds: float) -> str:
@@ -101,13 +102,14 @@ def _transcribe(whisper_model, device: str, wav: Path, model_name: str, language
             ) from e
         raise ReplayFlowError(f"Falha ao carregar o modelo '{model_name}': {e}") from e
 
-    raw_segments, info = model.transcribe(str(wav), language=language, vad_filter=True)
+    raw_segments, info = model.transcribe(str(wav), language=language, vad_filter=True, word_timestamps=True)
     segments: list[Segment] = []
     for s in raw_segments:  # gerador: a transcrição avança a cada iteração
         if cancel is not None and cancel.is_set():
             raise CancelledError()
         segments.append(Segment(start=s.start, end=s.end, text=s.text.strip(),
-                                confidence=round(math.exp(s.avg_logprob), 3)))
+                                confidence=round(math.exp(s.avg_logprob), 3),
+                                words=[(w.start, w.end, w.word.strip()) for w in (s.words or [])]))
     log.info("%d trechos transcritos (%s)", len(segments), "GPU" if device == "cuda" else "CPU",
              extra={"segments": len(segments), "duration": info.duration, "device": device})
     return segments

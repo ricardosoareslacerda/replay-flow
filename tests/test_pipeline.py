@@ -30,6 +30,7 @@ class FakeServices:
         mp.setattr(pipeline_mod.ffmpeg, "extract_frames", self._frames)
         mp.setattr(pipeline_mod.transcriber, "transcribe", self._transcribe)
         mp.setattr(pipeline_mod.ocr, "run", self._ocr)
+        mp.setattr(pipeline_mod.ocr, "text_at", lambda image, x, y, lang: "Ver boleto")
         mp.setattr(pipeline_mod, "tool_versions", lambda: {"ffmpeg": "test"})
 
     def _call(self, name: str) -> None:
