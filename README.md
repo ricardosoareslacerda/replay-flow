@@ -47,7 +47,7 @@ git clone https://github.com/ricardosoareslacerda/replay-flow.git
 powershell -ExecutionPolicy Bypass -File replay-flow\scripts\build-portable.ps1 -Target F:\Pipeline-Capture -Model small
 ```
 
-Monta `F:\Pipeline-Capture` com Python 3.12 embeddable, dependências, FFmpeg, Tesseract (+ português), modelo Whisper e o lançador `ReplayFlow.bat`. Sessões e preferências ficam dentro da própria pasta (`Sessions\`, `settings.ini`), então ela pode ser copiada para outro PC ou pendrive. Abra com duplo clique em `ReplayFlow.bat`; pela linha de comando, `ReplayFlow.bat process <pasta-da-sessão>`. Para atualizar, rode o script de novo.
+Monta `F:\Pipeline-Capture` com Python 3.12 embeddable, dependências, FFmpeg, Tesseract (+ português e inglês), OBS Studio portátil já configurado (`scripts/setup_obs.py`), modelo Whisper e o lançador `ReplayFlow.bat`. Com placa NVIDIA, inclui também cuBLAS/cuDNN (~1,3 GB) e a transcrição roda na GPU, voltando sozinha para a CPU se a placa falhar. Sessões e preferências ficam dentro da própria pasta (`Sessions\`, `settings.ini`), então ela pode ser copiada para outro PC ou pendrive. Abra com duplo clique em `ReplayFlow.bat`; pela linha de comando, `ReplayFlow.bat process <pasta-da-sessão>`. Para atualizar, rode o script de novo.
 
 ### macOS
 
@@ -77,12 +77,17 @@ Já vem com `pip install -e ".[all]"`. Os modelos ficam no cache do Hugging Face
 .venv\Scripts\replayflow.exe        # ou: replayflow, com a venv ativa
 ```
 
-1. **Nome** + **Pasta base** (padrão `C:\Users\<você>\Pipeline-Capture\Sessions`) e depois **Nova sessão**.
-2. Escolha uma das formas de obter o vídeo:
-   - **Gravar (OBS):** inicia a gravação do OBS e a captura de input ao mesmo tempo. Ao parar, o vídeo é importado sozinho. Ative o WebSocket em OBS > Ferramentas > Configurações do Servidor WebSocket (porta 4455). A senha é pedida a cada gravação e nunca é salva.
-   - **Importar vídeo…:** para gravações já feitas.
-3. Ajuste as opções (idioma, modelo, modo de frames, OCR, transcrição, captura) e clique em **Processar sessão**. Use **Cancelar** para interromper. Processar de novo **retoma** do ponto em que parou.
-4. Use **Gerar pacote para Claude** e **Copiar prompt para Claude**, e anexe `export/claude_package.md` (e, se quiser, alguns frames) na conversa.
+O topo da janela tem um **Passo a passo** com um botão **Próximo: …** que sempre executa a próxima ação:
+
+1. **Sessão:** escreva o **Nome** e clique em Próximo (cria a sessão em `Sessions\`).
+2. **Gravar ou importar:** **Gravar (OBS)** abre o OBS escondido na bandeja, liga a captura de cliques/teclas e grava. Use **Pausar/Retomar** se precisar interromper; a pausa é descontada de vídeo e eventos. **Parar gravação** importa o vídeo. Para um vídeo já gravado, use **Importar vídeo…**.
+3. **Processar:** com "processar automaticamente" ligado (padrão), começa sozinho ao parar a gravação. O botão **Processar sessão** serve para vídeos importados e para retomar um processamento interrompido.
+4. **Revisar:** abre o `claude_package.md`; **Reproduzir vídeo** abre a gravação.
+5. **Enviar ao Claude:** copia o prompt, seleciona o pacote no Explorer e abre o Claude no navegador. O envio é sempre manual.
+
+Os botões avulsos continuam disponíveis para seguir de qualquer ponto. Em **Opções** ficam o microfone e a saída de som gravados (o app avisa se o microfone gravar silêncio), o fluxo automático, o modo privado e a máscara de dados sensíveis; o resto fica em **opções avançadas**.
+
+O que a gravação pelo OBS acrescenta: microfone e som do computador em trilhas separadas (a transcrição usa só a sua voz; sons do sistema viram eventos), sincronia medida entre o início real do vídeo e os cliques, e uma foto por clique (tirada 0,15 s antes, com o ponto marcado) com o rótulo lido sob o cursor e o texto em volta (caixas de diálogo). No Ctrl+V, o texto colado é registrado.
 
 Durante a gravação, aperte **F9** antes de digitar uma senha e de novo depois. Nesse intervalo, só a quantidade de caracteres é registrada.
 
@@ -98,9 +103,9 @@ replayflow download-model small
 
 ```
 2026-10-13_001_automacao-boletos/
-├── raw/            gravacao.mkv, input_events.jsonl (captura ao vivo)
+├── raw/            gravacao.mkv (trilha 1 = microfone, 2 = som do computador), input_events.jsonl
 ├── audio/          audio.wav (16 kHz mono)
-├── frames/         frame_000001.jpg …
+├── frames/         frame_000001.jpg …, click_000001.jpg … (foto de cada clique)
 ├── ocr/            frame_000001.txt …
 ├── transcript/     transcript.json (start, end, text, confidence), transcript.md (MM:SS)
 ├── export/         claude_package.md, manifest.json, frames_index.csv
@@ -124,7 +129,9 @@ Exemplos reais gerados pelo código estão em [`examples/`](examples): [`session
 - **Nada sai da máquina.** Não há APIs externas, telemetria nem upload. O envio ao Claude é manual.
 - **O modo privado** intercepta `socket.connect` e a resolução DNS do processo. Qualquer destino fora do loopback gera erro, e o `localhost` continua liberado para o OBS. Os modelos Whisper são carregados com `local_files_only`.
 - **Senhas e tokens não são armazenados.** A senha do OBS fica só em memória, e o texto digitado em modo sigiloso (F9) nunca é gravado.
-- **Atenção:** o OCR lê o que aparece na tela. Dados visíveis (valores, CPF exibido, linha digitável) entram no pacote. Revise o `claude_package.md` antes de compartilhar.
+- **Máscara no pacote (padrão ligado):** e-mails, CPF/CNPJ, números de cartão e números de 11 dígitos aparecem como `[e-mail]`, `[CPF]`, `[cartão]`… no `claude_package.md`. O material bruto da sessão não é alterado.
+- **Texto colado (Ctrl+V)** é registrado, exceto no modo sigiloso (F9).
+- **Atenção:** o OCR lê o que aparece na tela. Nomes, valores e assuntos de e-mail visíveis entram no pacote. Revise o `claude_package.md` (passo 4 do guia) antes de compartilhar.
 
 ## Arquitetura
 

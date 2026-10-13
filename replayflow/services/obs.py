@@ -106,6 +106,24 @@ class ObsRecorder:
             log.warning("não foi possível separar as trilhas de áudio no OBS: %s", e)
             return False
 
+    def ensure_display(self) -> None:
+        """Captura de tela sem monitor escolhido grava preto: escolhe o monitor principal."""
+        try:
+            inputs = self._client.get_input_list("monitor_capture").inputs
+            for item in inputs:
+                name = item["inputName"]
+                if self._client.get_input_settings(name).input_settings.get("monitor_id"):
+                    continue
+                options = self._client.get_input_properties_list_property_items(name, "monitor_id").property_items
+                real = [o for o in options if o["itemValue"] and "Selec" not in o["itemName"]]
+                primary = next((o for o in real if "principal" in o["itemName"].lower() or "primary" in o["itemName"].lower()),
+                               real[0] if real else None)
+                if primary:
+                    self._client.set_input_settings(name, {"monitor_id": primary["itemValue"]}, True)
+                    log.info("captura de tela: %s", primary["itemName"])
+        except Exception as e:  # sem isso a gravação ainda funciona se o monitor já estiver escolhido
+            log.warning("não foi possível conferir o monitor da captura no OBS: %s", e)
+
     def set_devices(self, mic_id: str, desktop_id: str) -> None:
         """Escolhe qual microfone e qual saída de som o OBS grava ("default" = padrão do Windows)."""
         special = self._client.get_special_inputs()

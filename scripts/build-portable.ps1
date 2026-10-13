@@ -9,6 +9,9 @@
     <Target>\python\             Python 3.12 embeddable + dependências
     <Target>\tools\ffmpeg\       ffmpeg.exe / ffprobe.exe
     <Target>\tools\tesseract\    tesseract.exe + tessdata\por.traineddata
+    <Target>\tools\obs\          OBS Studio portátil (aberto pelo ReplayFlow ao gravar)
+    <Target>\Gravacoes\          vídeos gravados pelo OBS
+    <Target>\OBS.bat             abre o OBS manualmente (opcional)
     <Target>\models\             cache dos modelos Whisper (HF_HOME)
     <Target>\Sessions\           sessões gravadas
     <Target>\settings.ini        preferências da interface
@@ -95,11 +98,23 @@ if (-not (Test-Path (Join-Path $tessDir "tesseract.exe"))) {
     }
     if (-not (Test-Path (Join-Path $tessDir "tesseract.exe"))) { throw "Tesseract não foi instalado em $tessDir" }
 }
-$por = Join-Path $tessDir "tessdata\por.traineddata"
-if (-not (Test-Path $por)) {
-    Step "Baixando idioma português do Tesseract"
-    Invoke-WebRequest "https://github.com/tesseract-ocr/tessdata_fast/raw/main/por.traineddata" -OutFile $por
+foreach ($lang in "por", "eng") {  # OCR usa por+eng: telas de trabalho misturam os dois idiomas
+    $file = Join-Path $tessDir "tessdata\$lang.traineddata"
+    if (-not (Test-Path $file)) {
+        Step "Baixando idioma '$lang' do Tesseract"
+        Invoke-WebRequest "https://github.com/tesseract-ocr/tessdata_fast/raw/main/$lang.traineddata" -OutFile $file
+    }
 }
+
+Step "Instalando e configurando o OBS portátil (gravação pelo botão Gravar)"
+& $py (Join-Path $Repo "scripts\setup_obs.py") $Target
+if ($LASTEXITCODE) { throw "configuração do OBS falhou" }
+Set-Content (Join-Path $Target "OBS.bat") -Encoding ascii -Value @'
+@echo off
+rem Abre o OBS portatil manualmente (o ReplayFlow ja o abre sozinho ao gravar).
+"%~dp0python\python.exe" -c "import pathlib,sys; [p.unlink() for p in pathlib.Path(sys.argv[1]).glob('run_*') if p.is_file()]" "%~dp0tools\obs\config\obs-studio\.sentinel"
+start "" /D "%~dp0tools\obs\bin\64bit" obs64.exe --disable-updater
+'@
 
 Step "Gerando ReplayFlow.bat"
 Set-Content (Join-Path $Target "ReplayFlow.bat") -Encoding ascii -Value @'

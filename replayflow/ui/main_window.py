@@ -462,6 +462,7 @@ class MainWindow(QMainWindow):
                 self.capture.start()  # antes do OBS: nenhum clique se perde enquanto o vídeo arranca
             offset = 0.0
             if self.obs:
+                self.obs.ensure_display()
                 self.obs.set_devices(self.mic.currentData(), self.out.currentData())
                 log.info(f"microfone: {self.mic.currentText()} · som do computador: {self.out.currentText()}")
                 if self.obs.prepare_tracks():
