@@ -50,9 +50,11 @@ class PipelineConfig(BaseModel):
     max_width: int = Field(default=1280, ge=320)
     jpg_quality: int = Field(default=85, ge=1, le=100)
     input_offset_s: float = 0.0  # alinha o relógio da captura de input ao vídeo
+    redact_sensitive: bool = True  # mascara e-mails, CPF/CNPJ e cartões no pacote (só afeta o export)
 
     def fingerprint(self) -> str:
-        return hashlib.sha256(self.model_dump_json().encode()).hexdigest()
+        # Opções que só mudam o export não invalidam as etapas já processadas.
+        return hashlib.sha256(self.model_dump_json(exclude={"redact_sensitive"}).encode()).hexdigest()
 
 
 class CaptureConfig(BaseModel):

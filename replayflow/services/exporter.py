@@ -11,6 +11,7 @@ from pathlib import Path
 
 import replayflow
 from replayflow.core import timeline_store
+from replayflow.core.redact import redact
 from replayflow.core.layout import SessionLayout
 from replayflow.models import Session, Stage, StageStatus, TimelineEvent
 from replayflow.services.transcriber import mmss
@@ -320,7 +321,14 @@ def export(session: Session, versions: dict[str, str]) -> list[Path]:
     package = layout.export / "claude_package.md"
     manifest = layout.export / "manifest.json"
     write_frames_index(steps, index)
-    package.write_text(build_package(session, steps, events), encoding="utf-8")
+    text = build_package(session, steps, events)
+    if session.config.redact_sensitive:
+        text, masked = redact(text)
+        if masked:
+            note = (f"- **Dados sensíveis mascarados:** {masked} trecho(s) (e-mails, CPF/CNPJ, cartões e "
+                    "números de 11 dígitos aparecem como [e-mail], [CPF], [cartão]…).\n")
+            text = text.replace("\n## Pipeline executado", f"{note}\n## Pipeline executado", 1)
+    package.write_text(text, encoding="utf-8")
     manifest.write_text(json.dumps(build_manifest(session, layout, steps, versions), ensure_ascii=False, indent=2),
                         encoding="utf-8")
     return [package, manifest, index]

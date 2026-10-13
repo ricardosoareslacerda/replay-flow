@@ -12,7 +12,7 @@ from PyQt6.QtCore import QObject, QSettings, Qt, QThread, QUrl, pyqtSignal
 from PyQt6.QtGui import QDesktopServices, QGuiApplication
 from PyQt6.QtWidgets import (
     QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QInputDialog,
-    QLabel, QLineEdit, QMainWindow, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QSpinBox,
+    QLabel, QLineEdit, QMainWindow, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea, QSpinBox,
     QVBoxLayout, QWidget,
 )
 
@@ -154,6 +154,9 @@ class MainWindow(QMainWindow):
         self.chk_mouse = QCheckBox("Capturar cliques e janela", checked=True)
         self.chk_keys = QCheckBox("Capturar teclas (F9 = modo sigiloso)", checked=True)
         self.chk_private = QCheckBox("Modo privado (bloqueia rede externa)", checked=True)
+        self.chk_redact = QCheckBox("Mascarar e-mails, CPF/CNPJ e números de cartão no pacote para o Claude",
+                                    checked=self.settings.value("redact", True, type=bool))
+        self.chk_redact.toggled.connect(lambda on: self.settings.setValue("redact", on))
         self.chk_private.toggled.connect(self._apply_private_mode)
         self.mic = self._device_combo(audio_devices.microphones(), "mic_device")
         self.out = self._device_combo(audio_devices.outputs(), "out_device")
@@ -163,26 +166,27 @@ class MainWindow(QMainWindow):
         of.addRow("Microfone (sua voz)", self.mic)
         of.addRow("Som do computador", self.out)
         of.addRow(self.chk_auto)
-        of.addRow("Idioma", self.language)
-        of.addRow("Modelo Whisper", self.model)
-        of.addRow("Frames", self.frame_mode)
+        of.addRow(self.chk_private)
+        of.addRow(self.chk_redact)
         # Ajustes técnicos ficam recolhidos: o padrão serve para gravações de tela comuns.
         self.advanced = QWidget()
         af = QFormLayout(self.advanced)
         af.setContentsMargins(0, 0, 0, 0)
+        af.addRow("Idioma", self.language)
+        af.addRow("Modelo Whisper", self.model)
+        af.addRow("Frames", self.frame_mode)
         af.addRow("Intervalo entre frames", self.interval)
         af.addRow("Largura máx. da imagem", self.max_width)
         af.addRow("Qualidade JPG", self.quality)
+        toggles = QHBoxLayout()
+        for w in (self.chk_transcribe, self.chk_ocr, self.chk_mouse, self.chk_keys):
+            toggles.addWidget(w)
+        af.addRow(toggles)
         self.advanced.setVisible(False)
         self.chk_advanced = QCheckBox("Mostrar opções avançadas (deixe o padrão se estiver em dúvida)")
         self.chk_advanced.toggled.connect(self.advanced.setVisible)
         of.addRow(self.chk_advanced)
         of.addRow(self.advanced)
-        toggles = QHBoxLayout()
-        for w in (self.chk_transcribe, self.chk_ocr, self.chk_mouse, self.chk_keys):
-            toggles.addWidget(w)
-        of.addRow(toggles)
-        of.addRow(self.chk_private)
         root.addWidget(opts)
 
         self.progress = QProgressBar(maximum=len(Stage))
@@ -201,12 +205,19 @@ class MainWindow(QMainWindow):
 
         self.log = QPlainTextEdit(readOnly=True)
         self.log.setMaximumBlockCount(5000)
+        self.log.setMinimumHeight(140)  # com rolagem, garante o log visível em telas baixas
         root.addWidget(self.log, stretch=1)
 
         container = QWidget()
         container.setLayout(root)
-        self.setCentralWidget(container)
-        self.resize(900, 760)
+        # Rolagem em vez de janela maior que a tela: em notebooks 1080p o conteúdo passa da altura útil.
+        scroll = QScrollArea(widgetResizable=True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        scroll.setWidget(container)
+        self.setCentralWidget(scroll)
+        screen = QGuiApplication.primaryScreen()
+        avail = screen.availableGeometry() if screen else None
+        self.resize(960, min(1000, avail.height() - 60) if avail else 760)
 
     def _device_combo(self, devices: list[audio_devices.AudioDevice], key: str) -> QComboBox:
         combo = QComboBox()
@@ -245,6 +256,7 @@ class MainWindow(QMainWindow):
             max_width=self.max_width.value(),
             jpg_quality=self.quality.value(),
             input_offset_s=self.session.config.input_offset_s if self.session else 0.0,  # medido na gravação
+            redact_sensitive=self.chk_redact.isChecked(),
         )
 
     def _load_config_into_form(self, cfg: PipelineConfig) -> None:
