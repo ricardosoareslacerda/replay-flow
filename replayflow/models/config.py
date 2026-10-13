@@ -32,6 +32,9 @@ def default_base_dir() -> Path:
     return Path.home() / "ReplayFlow" / "Sessions"
 
 
+EXPORT_ONLY = {"redact_sensitive", "output_format"}  # mudam só o export: não invalidam etapas prontas
+
+
 class PipelineConfig(BaseModel):
     """Parâmetros que afetam o resultado. Entram no hash de reprodutibilidade."""
 
@@ -53,10 +56,12 @@ class PipelineConfig(BaseModel):
     redact_sensitive: bool = True  # mascara e-mails, CPF/CNPJ e cartões no pacote (só afeta o export)
     # Área da área de trabalho que foi gravada (monitor ou janela): esquerda, topo, largura, altura.
     capture_region: tuple[int, int, int, int] | None = None
+    # Cópia final do vídeo em export/: mkv (só o original), mp4 (H.264), hevc (MP4 H.265) ou wmv.
+    output_format: str = "mp4"
 
     def fingerprint(self) -> str:
         # Opções que só mudam o export não invalidam as etapas já processadas.
-        return hashlib.sha256(self.model_dump_json(exclude={"redact_sensitive"}, exclude_none=True).encode()).hexdigest()
+        return hashlib.sha256(self.model_dump_json(exclude=EXPORT_ONLY, exclude_none=True).encode()).hexdigest()
 
 
 class CaptureConfig(BaseModel):

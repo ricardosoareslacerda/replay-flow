@@ -204,6 +204,9 @@ class Pipeline:
         return True
 
     def _stage_export(self) -> bool:
+        out = ffmpeg.convert_video(self.video, self.layout.export, self.session.config.output_format, self.cancel)
+        if out:
+            log.info("vídeo final: %s", out.name)
         exporter.export(self.session, tool_versions())
         return True
 

@@ -98,7 +98,9 @@ def test_claude_package(session: Session) -> None:
 def test_prompt_mentions_package(session: Session) -> None:
     prompt = exporter.build_prompt(session)
 
-    assert "claude_package.md" in prompt and "Automação boletos" in prompt
+    assert "pacote_ia.md" in prompt and "Automação boletos" in prompt
+    agent = exporter.build_prompt(session, "agent")
+    assert str(session.root) in agent and "LEIA-ME_PARA_IA.md" in agent and "Anexei" not in agent
 
 
 def test_words_split_narration_and_click_label_names_the_target() -> None:

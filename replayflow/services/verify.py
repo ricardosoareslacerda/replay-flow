@@ -203,7 +203,7 @@ def _fix_line(m: Mention) -> str:
 
 
 def summary_lines(report: Report) -> list[str]:
-    """Resumo para o topo do claude_package.md."""
+    """Resumo para o topo do pacote_ia.md."""
     if not report.checked and not report.silent_gaps:
         return ["_Sem narração para verificar: a análise depende só das ações e das telas._"]
     lines = []

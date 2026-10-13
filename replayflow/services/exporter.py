@@ -1,4 +1,5 @@
-"""Gera os artefatos de export a partir da timeline: frames_index.csv, manifest.json e claude_package.md."""
+"""Gera os artefatos de export a partir da timeline: pacote_ia.md (+ cópia claude_package.md),
+LEIA-ME_PARA_IA.md, verificacao.md, frames_index.csv e manifest.json. Servem a qualquer IA."""
 
 from __future__ import annotations
 
@@ -150,7 +151,7 @@ def _new_lines(text: str, previous: str, limit: int = 15) -> list[str]:
 
 
 def _script_lines(steps: list[Step]) -> list[str]:
-    """Roteiro em uma linha por passo: o que o Claude lê primeiro para entender a sequência."""
+    """Roteiro em uma linha por passo: o que a IA lê primeiro para entender a sequência."""
     lines, window, shown = [], "", ""
     for s in (s for s in steps if s.relevant):
         parts, sounds = [], 0
@@ -312,16 +313,62 @@ def build_package(session: Session, steps: list[Step], events: list[TimelineEven
     return "\n".join(out) + "\n"
 
 
-def build_prompt(session: Session) -> str:
-    """Texto curto para colar no Claude junto com o claude_package.md anexado."""
+PACKAGE = "pacote_ia.md"
+LEGACY_PACKAGE = "claude_package.md"  # nome antigo, mantido para quem já usa
+README = "LEIA-ME_PARA_IA.md"
+
+# Destinos do botão "Revisar e enviar". url vazia = não abre navegador (agente local ou outra IA).
+AI_TARGETS = {
+    "claude": ("Claude", "https://claude.ai/new"),
+    "chatgpt": ("ChatGPT", "https://chatgpt.com/"),
+    "gemini": ("Gemini", "https://gemini.google.com/app"),
+    "copilot": ("Copilot", "https://copilot.microsoft.com/"),
+    "agent": ("Agente com acesso à pasta", ""),
+    "other": ("Outra IA (só copiar)", ""),
+}
+
+
+def build_prompt(session: Session, target: str = "claude") -> str:
+    """Prompt para colar na IA. Para um agente local, aponta a pasta da gravação em vez de pedir anexo."""
     items = "\n".join(f"{i}. {r}" for i, r in enumerate(ANALYSIS_REQUESTS, start=1))
-    return (
-        f"Anexei o arquivo claude_package.md da sessão \"{session.name}\" ({mmss(session.duration_s or 0)}), "
-        "gerado localmente a partir da gravação de tela, narração, OCR e ações registradas.\n"
-        f"{OBJECTIVE}\n"
-        f"Com base nele, produza:\n{items}\n"
-        "Cite passo e timestamp para cada conclusão e liste o que precisa ser confirmado comigo."
-    )
+    head = f"Gravação \"{session.name}\" ({mmss(session.duration_s or 0)}), gerada localmente pelo ReplayFlow " \
+           "a partir da tela, da narração, do texto lido das telas e das ações registradas (cliques e teclas).\n"
+    if target == "agent":
+        root = session.root
+        source = (f"Os arquivos estão na pasta {root}. Leia, nesta ordem:\n"
+                  f"- {root / 'export' / README} (como a pasta está organizada)\n"
+                  f"- {root / 'export' / PACKAGE} (roteiro passo a passo, transcrição e telas)\n"
+                  f"- {root / 'export' / 'verificacao.md'} (fala × tela e correções aplicadas)\n"
+                  f"- as fotos dos cliques em {root / 'frames'} (click_*.jpg, ponto marcado) quando precisar ver a tela\n")
+    else:
+        source = f"Anexei o arquivo {PACKAGE} dessa gravação (e, se houver, algumas fotos dos cliques).\n"
+    return (head + source + f"{OBJECTIVE}\nCom base nesse material, produza:\n{items}\n"
+            "Cite passo e horário (MM:SS) para cada conclusão e liste o que precisa ser confirmado comigo.")
+
+
+def build_readme(session: Session) -> str:
+    """Guia curto da pasta para qualquer IA ou agente que a abra."""
+    return "\n".join([
+        f"# Gravação do ReplayFlow: {session.name}",
+        "",
+        "Esta pasta registra uma pessoa executando uma atividade de trabalho no computador, para que uma IA "
+        "entenda o fluxo e proponha melhorias e automações. Tudo está no mesmo relógio do vídeo (MM:SS).",
+        "",
+        "| Arquivo | O que é |",
+        "|---|---|",
+        f"| export/{PACKAGE} | Comece aqui: roteiro passo a passo, transcrição, texto das telas e instruções |",
+        "| export/verificacao.md | Conferência fala × tela e as correções aplicadas na transcrição |",
+        "| export/frames_index.csv | Índice das imagens: arquivo, horário, ações |",
+        "| frames/click_*.jpg | Foto de cada clique, um instante antes, com o ponto marcado em vermelho |",
+        "| frames/frame_*.jpg | Imagens da tela a cada intervalo e a cada mudança de tela |",
+        "| ocr/*.txt | Texto lido de cada imagem (pode ter erros de leitura) |",
+        "| transcript/ | Narração original (transcript.md) e corrigida (transcript_corrigido.md) |",
+        "| raw/ | Vídeo original e eventos brutos de mouse e teclado |",
+        "",
+        "Dados pessoais (e-mails, CPF/CNPJ, cartões) podem estar mascarados no pacote. Senhas digitadas em modo "
+        "sigiloso aparecem só como [SEGREDO: n caracteres].",
+        "",
+    ])
 
 
 def write_corrected_transcript(events: list[TimelineEvent], path: Path, title: str) -> None:
@@ -345,7 +392,7 @@ def export(session: Session, versions: dict[str, str]) -> list[Path]:
     write_corrected_transcript(events, layout.transcript / "transcript_corrigido.md", session.name)
     steps = build_steps(events, session.duration_s or 0)
     index = layout.export / "frames_index.csv"
-    package = layout.export / "claude_package.md"
+    package = layout.export / PACKAGE
     manifest = layout.export / "manifest.json"
     write_frames_index(steps, index)
     text = build_package(session, steps, events, check)
@@ -359,6 +406,8 @@ def export(session: Session, versions: dict[str, str]) -> list[Path]:
                     "números de 11 dígitos aparecem como [e-mail], [CPF], [cartão]…).\n")
             text = text.replace("\n## Pipeline executado", f"{note}\n## Pipeline executado", 1)
     package.write_text(text, encoding="utf-8")
+    (layout.export / LEGACY_PACKAGE).write_text(text, encoding="utf-8")
+    (layout.export / README).write_text(build_readme(session), encoding="utf-8")
     manifest.write_text(json.dumps(build_manifest(session, layout, steps, versions), ensure_ascii=False, indent=2),
                         encoding="utf-8")
     return [package, manifest, index, verification]

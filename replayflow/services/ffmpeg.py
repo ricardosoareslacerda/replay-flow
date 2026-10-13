@@ -157,6 +157,29 @@ def extract_frame_at(video: Path, t: float, out: Path, cfg: PipelineConfig, canc
           "-vf", f"scale='min({cfg.max_width},iw)':-2", "-q:v", str(jpeg_qscale(cfg.jpg_quality)), str(out)], cancel)
 
 
+OUTPUT_FORMATS = {
+    # formato: (extensão, argumentos de codificação). H.264 do OBS só troca de "envelope" (rápido).
+    "mp4": ("mp4", ["-map", "0:v:0", "-map", "0:a?", "-c", "copy", "-movflags", "+faststart"]),
+    "hevc": ("mp4", ["-map", "0:v:0", "-map", "0:a?", "-c:v", "libx265", "-crf", "26", "-preset", "fast",
+                     "-tag:v", "hvc1", "-c:a", "aac", "-movflags", "+faststart"]),
+    "wmv": ("wmv", ["-map", "0:v:0", "-map", "0:a:0?", "-c:v", "wmv2", "-q:v", "3", "-c:a", "wmav2", "-b:a", "160k"]),
+}
+
+
+def convert_video(video: Path, out_dir: Path, fmt: str, cancel: threading.Event | None = None) -> Path | None:
+    """Gera export/video.<ext> no formato escolhido; reaproveita se já estiver atualizado."""
+    if fmt not in OUTPUT_FORMATS:
+        return None
+    ext, args = OUTPUT_FORMATS[fmt]
+    out = out_dir / f"video.{ext}"
+    if out.exists() and out.stat().st_mtime >= video.stat().st_mtime and out.stat().st_size > 0:
+        return out
+    for old in out_dir.glob("video.*"):
+        old.unlink()
+    _run([_bin("ffmpeg"), "-y", "-hide_banner", "-i", str(video), *args, str(out)], cancel)
+    return out
+
+
 def jpeg_qscale(quality: int) -> int:
     """Converte qualidade 1-100 para a escala -q:v do MJPEG (2 = melhor, 31 = pior)."""
     return round(31 - (quality - 1) * 29 / 99)

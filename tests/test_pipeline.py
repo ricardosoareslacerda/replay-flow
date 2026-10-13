@@ -26,6 +26,7 @@ class FakeServices:
         mp.setattr(pipeline_mod.ffmpeg, "detect_sounds", self._sounds)
         mp.setattr(pipeline_mod.ffmpeg, "video_width", lambda v: 1920)
         mp.setattr(pipeline_mod.ffmpeg, "video_size", lambda v: (1920, 1080))
+        mp.setattr(pipeline_mod.ffmpeg, "convert_video", lambda *a, **k: None)
         mp.setattr(pipeline_mod.ffmpeg, "extract_frame_at", self._frame_at)
         mp.setattr(pipeline_mod.ffmpeg, "extract_audio", self._audio)
         mp.setattr(pipeline_mod.ffmpeg, "extract_frames", self._frames)

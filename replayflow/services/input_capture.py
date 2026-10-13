@@ -150,7 +150,9 @@ class InputRecorder:
 class InputCapture:
     """Liga o InputRecorder ao pynput e grava em JSONL (append, uma linha por evento)."""
 
-    def __init__(self, out_file: Path, secret_key: str = "f9", mouse: bool = True, keys: bool = True) -> None:
+    def __init__(self, out_file: Path, secret_key: str = "f9", mouse: bool = True, keys: bool = True,
+                 on_click: Callable[[], None] | None = None) -> None:
+        self._on_click = on_click  # ex.: pulso do destaque do mouse (não precisa de captura ligada)
         try:
             from pynput import keyboard, mouse as pmouse
         except ImportError:
@@ -161,6 +163,7 @@ class InputCapture:
         self._t0 = time.monotonic()
         self._paused_at: float | None = None
         self._paused_total = 0.0
+        self.counts: dict[str, int] = {}
         self.recorder = InputRecorder(self._write, secret_key)
         self._listeners = []
         if keys:
@@ -190,6 +193,8 @@ class InputCapture:
                 self._paused_at = None
 
     def _write(self, event: TimelineEvent) -> None:
+        key = event.kind if event.source != "window" else "window"
+        self.counts[key] = self.counts.get(key, 0) + 1  # contadores ao vivo na tela de gravação
         self._file.write(event.model_dump_json() + "\n")
         self._file.flush()
 
@@ -221,6 +226,8 @@ class InputCapture:
 
     def _click(self, x: int, y: int, button: object, pressed: bool) -> None:
         if pressed:
+            if self._on_click and self._paused_at is None:
+                self._on_click()
             with self._lock:
                 if self._paused_at is None:
                     self.recorder.on_click(self._now(), x, y, getattr(button, "name", str(button)))

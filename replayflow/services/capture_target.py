@@ -122,6 +122,24 @@ def windows(skip_titles: tuple[str, ...] = ("ReplayFlow", "OBS ")) -> list[Targe
     return found
 
 
+def monitor_of(region: Region, screens: list[Target]) -> Target | None:
+    """Monitor que contém o centro da região (áreas e janelas são gravadas a partir do monitor delas)."""
+    cx, cy = region[0] + region[2] / 2, region[1] + region[3] / 2
+    for m in screens:
+        x, y, w, h = m.region
+        if x <= cx < x + w and y <= cy < y + h:
+            return m
+    return screens[0] if screens else None
+
+
+def clamp(region: Region, screen: Region) -> Region:
+    """Recorta a região para caber no monitor (janela parcialmente fora da tela)."""
+    left, top = max(region[0], screen[0]), max(region[1], screen[1])
+    right = min(region[0] + region[2], screen[0] + screen[2])
+    bottom = min(region[1] + region[3], screen[1] + screen[3])
+    return left, top, max(2, right - left), max(2, bottom - top)
+
+
 def to_video(x: float, y: float, region: Region | None, video_w: int, video_h: int) -> tuple[float, float] | None:
     """Converte um clique da área de trabalho para pixels do vídeo; None se caiu fora da área gravada.
 

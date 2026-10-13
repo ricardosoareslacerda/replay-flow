@@ -77,18 +77,13 @@ Já vem com `pip install -e ".[all]"`. Os modelos ficam no cache do Hugging Face
 .venv\Scripts\replayflow.exe        # ou: replayflow, com a venv ativa
 ```
 
-A janela tem um bloco só, **Registrar uma atividade do seu dia a dia**, com um botão **Próximo: …** que sempre executa a próxima ação:
+A janela tem a linha do tempo do passo a passo no topo (Nomear → Gravar → Processar → Revisar e enviar), a lista **O que entra no vídeo** à esquerda e a **Prévia do vídeo** à direita:
 
-1. **Nomear a atividade:** escreva com suas palavras o que vai mostrar (ex.: "baixar e arquivar as faturas do mês").
-2. **Gravar:** abre o OBS escondido, liga a captura de cliques/teclas e grava. **Pausar/Retomar** e **Cancelar gravação** (descarta o vídeo sem processar) aparecem durante a gravação; a pausa é descontada de vídeo e eventos.
-3. **Processar:** começa sozinho ao parar a gravação. Enquanto processa, todos os comandos ficam bloqueados (só **Ferramentas › Cancelar processamento** continua disponível).
-4. **Revisar e enviar ao Claude** (um clique): abre o `claude_package.md` para conferência, copia o prompt, seleciona o pacote no Explorer e abre o Claude no navegador. O envio é sempre manual.
-
-Menus:
-
-- **Atividade:** nova, abrir uma gravada, **importar vídeo já gravado** (janela própria: nome + arquivo → importa e processa), reproduzir vídeo, abrir pasta.
-- **Ferramentas:** processar/retomar, gerar pacote, copiar prompt, cancelar processamento.
-- **Configurações:** **Áudio** (microfone da narração e saída de som; o app avisa se o microfone gravar silêncio), **Opções** (fluxo automático, modo privado, máscara de dados e ajustes avançados) e a pasta onde as atividades são salvas.
+- **Área de captura:** *Tela inteira* (escolha o monitor), *Área* (você arrasta um retângulo na tela, com proporção livre, 16:9 ou 4:3) ou *Janela* (passe o mouse e clique na janela). Área e janela viram um recorte da tela no OBS e ganham uma moldura âmbar por fora durante a gravação.
+- **Microfone**, **Som do computador**, **Destaque do mouse** (anel vermelho e pulso a cada clique, desligado por padrão) e **Webcam no canto**: interruptores, com a prévia mostrando o efeito.
+- **Qualidade:** HD 720p ou Full HD 1080p. **Formato:** o OBS grava sempre em MKV (à prova de travamento) e o app entrega `export/video.mp4` (H.264, só troca de envelope), `video.mp4` H.265 ou `video.wmv` (codec WMV2).
+- O botão principal muda conforme o passo: **Iniciar gravação** (cria a atividade com o nome digitado) → **Parar e processar** (com **Pausar** e **Descartar** ao lado e cronômetro na prévia) → **Revisar e enviar para a IA**.
+- **Revisar e enviar para a IA:** escolha Claude, ChatGPT, Gemini, Copilot, *Agente com acesso à pasta* (o prompt aponta a pasta da gravação; o agente lê os arquivos sozinho) ou *Outra IA*. O pacote é `export/pacote_ia.md` (cópia `claude_package.md`), com `export/LEIA-ME_PARA_IA.md` explicando a pasta.
 O que a gravação pelo OBS acrescenta: microfone e som do computador em trilhas separadas (a transcrição usa só a sua voz; sons do sistema viram eventos), sincronia medida entre o início real do vídeo e os cliques, e uma foto por clique (tirada 0,15 s antes, com o ponto marcado) com o rótulo lido sob o cursor e o texto em volta (caixas de diálogo). No Ctrl+V, o texto colado é registrado.
 
 Durante a gravação, aperte **F9** antes de digitar uma senha e de novo depois. Nesse intervalo, só a quantidade de caracteres é registrada.

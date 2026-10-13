@@ -18,3 +18,12 @@ def test_without_region_keeps_screen_coordinates() -> None:
 
 def test_obs_window_spec_escapes_colons() -> None:
     assert obs_escape("Boleto: 10/26 #1") == "Boleto#3A 10/26 #221"
+
+
+def test_monitor_of_and_clamp() -> None:
+    from replayflow.services.capture_target import Target, clamp, monitor_of
+
+    m1 = Target("monitor", "1", (0, 0, 1920, 1080), primary=True)
+    m2 = Target("monitor", "2", (1920, 0, 2560, 1440))
+    assert monitor_of((2000, 100, 800, 600), [m1, m2]) is m2
+    assert clamp((1800, -10, 400, 300), m1.region) == (1800, 0, 120, 290)

@@ -19,6 +19,7 @@ from replayflow.models.config import portable_home
 log = logging.getLogger(__name__)
 
 WINDOW_SOURCE = "Janela"
+WEBCAM_SOURCE = "Webcam"
 OBS_ARGS = ["--minimize-to-tray", "--disable-updater", "--disable-shutdown-check"]
 
 
@@ -125,40 +126,82 @@ class ObsRecorder:
         except Exception as e:  # sem isso a gravação ainda funciona se o monitor já estiver escolhido
             log.warning("não foi possível conferir o monitor da captura no OBS: %s", e)
 
-    def set_target(self, target) -> None:  # type: ignore[no-untyped-def]
-        """Grava só o monitor ou a janela escolhida, encaixada no quadro e alinhada no canto superior
-        esquerdo (é essa a conta que capture_target.to_video desfaz para posicionar os cliques)."""
+    def configure(self, monitor, region, out_height: int, webcam: bool = False,  # type: ignore[no-untyped-def]
+                  webcam_corner: str = "bottom-right") -> tuple[int, int]:
+        """Prepara a cena para gravar exatamente `region` (tela inteira, área desenhada ou janela).
+
+        Tudo vira um recorte da captura do monitor: o quadro do vídeo passa a ter o tamanho da área
+        (sem tarjas) e a saída é reduzida para a altura escolhida (HD 720 / Full HD 1080) mantendo a
+        proporção. Assim o destaque do mouse aparece no vídeo em qualquer modo e capture_target.to_video
+        converte os cliques com uma conta só. Devolve o tamanho do vídeo (largura, altura).
+        """
         c = self._client
         scene = c.get_current_program_scene().current_program_scene_name
-        video = c.get_video_settings()
         items = c.get_scene_item_list(scene).scene_items
         screen = next((i for i in items if i.get("inputKind") == "monitor_capture"), None)
-        window = next((i for i in items if i.get("sourceName") == WINDOW_SOURCE), None)
-        if target.kind == "monitor":
-            if screen is None:
-                raise ReplayFlowError("A cena do OBS não tem captura de tela. Rode scripts/setup_obs.py de novo.")
-            options = c.get_input_properties_list_property_items(screen["sourceName"], "monitor_id").property_items
-            origin = f"@ {target.region[0]},{target.region[1]}"
-            chosen = next((o for o in options if origin in o["itemName"]), None)
-            if chosen:
-                c.set_input_settings(screen["sourceName"], {"monitor_id": chosen["itemValue"]}, True)
-            active, inactive = screen, window
-        else:
-            settings = {"window": target.window_spec, "method": 2, "client_area": True, "cursor": True}
-            if window is None:
-                item_id = c.create_input(scene, WINDOW_SOURCE, "window_capture", settings, True).scene_item_id
-                window = {"sourceName": WINDOW_SOURCE, "sceneItemId": item_id}
-            else:
-                c.set_input_settings(WINDOW_SOURCE, settings, True)
-            active, inactive = window, screen
-        if inactive is not None:
-            c.set_scene_item_enabled(scene, inactive["sceneItemId"], False)
-        c.set_scene_item_enabled(scene, active["sceneItemId"], True)
-        c.set_scene_item_transform(scene, active["sceneItemId"], {
-            "positionX": 0.0, "positionY": 0.0, "alignment": 5, "boundsType": "OBS_BOUNDS_SCALE_INNER",
-            "boundsWidth": float(video.base_width), "boundsHeight": float(video.base_height), "boundsAlignment": 5})
-        log.info("gravando: %s", target.label)
+        if screen is None:
+            raise ReplayFlowError("A cena do OBS não tem captura de tela. Rode scripts/setup_obs.py de novo.")
+        options = c.get_input_properties_list_property_items(screen["sourceName"], "monitor_id").property_items
+        origin = f"@ {monitor.region[0]},{monitor.region[1]}"
+        chosen = next((o for o in options if origin in o["itemName"]), None)
+        if chosen:
+            c.set_input_settings(screen["sourceName"], {"monitor_id": chosen["itemValue"]}, True)
 
+        even = lambda v: max(2, int(round(v)) // 2 * 2)  # noqa: E731 - encoders exigem dimensões pares
+        left, top, w, h = region
+        w, h = even(w), even(h)
+        scale = min(1.0, out_height / h)
+        out_w, out_h = even(w * scale), even(h * scale)
+        c.set_video_settings(30, 1, w, h, out_w, out_h)
+
+        mx, my, mw, mh = monitor.region
+        crop = {"cropLeft": left - mx, "cropTop": top - my,
+                "cropRight": max(0, mx + mw - (left + w)), "cropBottom": max(0, my + mh - (top + h))}
+        c.set_scene_item_enabled(scene, screen["sceneItemId"], True)
+        c.set_scene_item_transform(scene, screen["sceneItemId"], {
+            "positionX": 0.0, "positionY": 0.0, "alignment": 5, "boundsType": "OBS_BOUNDS_NONE",
+            "scaleX": 1.0, "scaleY": 1.0, **{k: float(v) for k, v in crop.items()}})
+        for i in items:  # captura de janela antiga (versões anteriores) fica desligada
+            if i.get("sourceName") == WINDOW_SOURCE:
+                c.set_scene_item_enabled(scene, i["sceneItemId"], False)
+        self._webcam(scene, items, webcam, w, h, webcam_corner)
+        log.info("área gravada: %dx%d a partir de (%d, %d); vídeo %dx%d", w, h, left, top, out_w, out_h)
+        return out_w, out_h
+
+    def _webcam(self, scene: str, items: list[dict], on: bool, w: int, h: int, corner: str) -> None:
+        """Rosto no canto (~20% da largura), por cima da tela gravada."""
+        c = self._client
+        cam = next((i for i in items if i.get("sourceName") == WEBCAM_SOURCE), None)
+        if not on:
+            if cam:
+                c.set_scene_item_enabled(scene, cam["sceneItemId"], False)
+            return
+        if cam is None:
+            item_id = c.create_input(scene, WEBCAM_SOURCE, "dshow_input", {}, True).scene_item_id
+            devices = c.get_input_properties_list_property_items(WEBCAM_SOURCE, "video_device_id").property_items
+            real = [d for d in devices if d["itemValue"]]
+            if not real:
+                c.remove_input(WEBCAM_SOURCE)
+                raise ReplayFlowError("Nenhuma webcam encontrada. Desligue a opção Webcam ou conecte uma câmera.")
+            c.set_input_settings(WEBCAM_SOURCE, {"video_device_id": real[0]["itemValue"]}, True)
+        else:
+            item_id = cam["sceneItemId"]
+        size = round(w * 0.2)
+        margin = round(w * 0.02)
+        right, bottom = corner.endswith("right"), corner.startswith("bottom")
+        c.set_scene_item_enabled(scene, item_id, True)
+        c.set_scene_item_index(scene, item_id, len(items))  # sempre por cima
+        c.set_scene_item_transform(scene, item_id, {
+            "boundsType": "OBS_BOUNDS_SCALE_INNER", "boundsWidth": float(size), "boundsHeight": float(size * 3 // 4),
+            "boundsAlignment": 0, "alignment": (8 if bottom else 4) | (2 if right else 1),
+            "positionX": float(w - margin if right else margin), "positionY": float(h - margin if bottom else margin)})
+
+    def set_audio(self, mic_on: bool, speaker_on: bool) -> None:
+        """Interruptores Microfone e Som do computador: mudo no OBS (a trilha continua existindo)."""
+        special = self._client.get_special_inputs()
+        for name, on in ((special.mic1, mic_on), (special.desktop1, speaker_on)):
+            if name:
+                self._client.set_input_mute(name, not on)
     def set_devices(self, mic_id: str, desktop_id: str) -> None:
         """Escolhe qual microfone e qual saída de som o OBS grava ("default" = padrão do Windows)."""
         special = self._client.get_special_inputs()
