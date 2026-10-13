@@ -17,7 +17,7 @@ class ObsRecorder:
             self._client = obs.ReqClient(host=host, port=port, password=password or "", timeout=3)
         except Exception as e:
             raise ReplayFlowError(
-                f"Não conectou ao OBS em {host}:{port}. Ative Ferramentas > Configurações do WebSocket no OBS. ({e})"
+                f"Não conectou ao OBS em {host}:{port}. Ative no OBS: Ferramentas > Configurações do Servidor WebSocket. ({e})"
             ) from e
 
     def start(self) -> None:

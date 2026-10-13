@@ -15,6 +15,7 @@ from replayflow.models import Session, Stage, StageStatus, TimelineEvent
 from replayflow.services.transcriber import mmss
 
 OCR_EXCERPT_CHARS = 1500
+_BUTTONS = {"left": "esquerdo", "right": "direito", "middle": "do meio"}
 
 ANALYSIS_REQUESTS = (
     "Descrição passo a passo do fluxo observado.",
@@ -49,7 +50,8 @@ class Step:
 def describe_action(e: TimelineEvent) -> str:
     match e.source, e.kind:
         case "mouse", "click":
-            return f"clique {e.data.get('button', '')} em ({e.data.get('x')}, {e.data.get('y')})"
+            button = _BUTTONS.get(e.data.get("button", ""), e.data.get("button", ""))
+            return f"clique {button} em ({e.data.get('x')}, {e.data.get('y')})"
         case "key", "text":
             return f"digitou \"{e.data['text']}\""
         case "key", "secret":
