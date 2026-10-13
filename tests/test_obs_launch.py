@@ -26,3 +26,13 @@ def test_launch_skipped_without_portable_obs(monkeypatch) -> None:
     monkeypatch.setattr(obs, "port_open", lambda **_: False)
     monkeypatch.setattr(obs, "portable_obs_exe", lambda: None)
     assert obs.launch_portable_obs() is None
+
+
+def test_clear_crash_flag_removes_run_markers(tmp_path: Path) -> None:
+    exe = tmp_path / "obs" / "bin" / "64bit" / "obs64.exe"
+    sentinel = tmp_path / "obs" / "config" / "obs-studio" / ".sentinel"
+    sentinel.mkdir(parents=True)
+    (sentinel / "run_abc").write_text("")
+    (sentinel / "run_dir").mkdir()
+    obs.clear_crash_flag(exe)
+    assert list(sentinel.iterdir()) == []

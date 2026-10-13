@@ -7,6 +7,7 @@ minimizado na bandeja, quando o usuário clica em Gravar, e o fecha ao sair.
 from __future__ import annotations
 
 import logging
+import shutil
 import socket
 import subprocess
 import time
@@ -34,6 +35,25 @@ def port_open(host: str = "localhost", port: int = 4455) -> bool:
         return False
 
 
+def clear_crash_flag(exe: Path) -> None:
+    """Apaga as marcas de execução do OBS portátil.
+
+    O ReplayFlow encerra o OBS que ele mesmo abriu; sem isso o OBS acharia que travou e perguntaria
+    a cada abertura se deve iniciar no Modo Seguro (que desligaria o WebSocket usado para gravar).
+    """
+    sentinel = exe.parents[2] / "config" / "obs-studio" / ".sentinel"
+    for run in sentinel.glob("run_*"):
+        shutil.rmtree(run, ignore_errors=True) if run.is_dir() else run.unlink(missing_ok=True)
+
+
+def stop_portable_obs(proc: subprocess.Popen[bytes]) -> None:
+    if proc.poll() is None:
+        proc.terminate()
+        proc.wait(10)
+    if exe := portable_obs_exe():
+        clear_crash_flag(exe)
+
+
 def launch_portable_obs(port: int = 4455, wait_s: float = 30) -> subprocess.Popen[bytes] | None:
     """Abre o OBS portátil se ele não estiver rodando. Devolve o processo se fomos nós que o abrimos."""
     if port_open(port=port):
@@ -41,6 +61,7 @@ def launch_portable_obs(port: int = 4455, wait_s: float = 30) -> subprocess.Pope
     exe = portable_obs_exe()
     if not exe:
         return None
+    clear_crash_flag(exe)
     proc = subprocess.Popen([str(exe), *OBS_ARGS], cwd=exe.parent)
     deadline = time.monotonic() + wait_s
     while time.monotonic() < deadline:

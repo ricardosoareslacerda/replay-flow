@@ -499,6 +499,8 @@ class MainWindow(QMainWindow):
         if self.thread:
             self.thread.quit()
             self.thread.wait(5000)
-        if self.obs_proc and self.obs_proc.poll() is None:  # fecha o OBS só se foi o ReplayFlow que o abriu
-            self.obs_proc.terminate()
+        if self.obs_proc:  # fecha o OBS só se foi o ReplayFlow que o abriu
+            from replayflow.services.obs import stop_portable_obs
+
+            stop_portable_obs(self.obs_proc)
         super().closeEvent(event)
