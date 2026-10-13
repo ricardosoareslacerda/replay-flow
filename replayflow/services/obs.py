@@ -18,6 +18,7 @@ from replayflow.models.config import portable_home
 
 log = logging.getLogger(__name__)
 
+WINDOW_SOURCE = "Janela"
 OBS_ARGS = ["--minimize-to-tray", "--disable-updater", "--disable-shutdown-check"]
 
 
@@ -123,6 +124,40 @@ class ObsRecorder:
                     log.info("captura de tela: %s", primary["itemName"])
         except Exception as e:  # sem isso a gravação ainda funciona se o monitor já estiver escolhido
             log.warning("não foi possível conferir o monitor da captura no OBS: %s", e)
+
+    def set_target(self, target) -> None:  # type: ignore[no-untyped-def]
+        """Grava só o monitor ou a janela escolhida, encaixada no quadro e alinhada no canto superior
+        esquerdo (é essa a conta que capture_target.to_video desfaz para posicionar os cliques)."""
+        c = self._client
+        scene = c.get_current_program_scene().current_program_scene_name
+        video = c.get_video_settings()
+        items = c.get_scene_item_list(scene).scene_items
+        screen = next((i for i in items if i.get("inputKind") == "monitor_capture"), None)
+        window = next((i for i in items if i.get("sourceName") == WINDOW_SOURCE), None)
+        if target.kind == "monitor":
+            if screen is None:
+                raise ReplayFlowError("A cena do OBS não tem captura de tela. Rode scripts/setup_obs.py de novo.")
+            options = c.get_input_properties_list_property_items(screen["sourceName"], "monitor_id").property_items
+            origin = f"@ {target.region[0]},{target.region[1]}"
+            chosen = next((o for o in options if origin in o["itemName"]), None)
+            if chosen:
+                c.set_input_settings(screen["sourceName"], {"monitor_id": chosen["itemValue"]}, True)
+            active, inactive = screen, window
+        else:
+            settings = {"window": target.window_spec, "method": 2, "client_area": True, "cursor": True}
+            if window is None:
+                item_id = c.create_input(scene, WINDOW_SOURCE, "window_capture", settings, True).scene_item_id
+                window = {"sourceName": WINDOW_SOURCE, "sceneItemId": item_id}
+            else:
+                c.set_input_settings(WINDOW_SOURCE, settings, True)
+            active, inactive = window, screen
+        if inactive is not None:
+            c.set_scene_item_enabled(scene, inactive["sceneItemId"], False)
+        c.set_scene_item_enabled(scene, active["sceneItemId"], True)
+        c.set_scene_item_transform(scene, active["sceneItemId"], {
+            "positionX": 0.0, "positionY": 0.0, "alignment": 5, "boundsType": "OBS_BOUNDS_SCALE_INNER",
+            "boundsWidth": float(video.base_width), "boundsHeight": float(video.base_height), "boundsAlignment": 5})
+        log.info("gravando: %s", target.label)
 
     def set_devices(self, mic_id: str, desktop_id: str) -> None:
         """Escolhe qual microfone e qual saída de som o OBS grava ("default" = padrão do Windows)."""

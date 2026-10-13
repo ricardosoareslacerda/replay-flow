@@ -11,7 +11,7 @@ from replayflow.core import logging_setup, session_store, timeline_store
 from replayflow.core.errors import CancelledError, ReplayFlowError
 from replayflow.core.layout import SessionLayout
 from replayflow.models import Session, Stage, StageStatus, TimelineEvent
-from replayflow.services import click_marker, exporter, ffmpeg, ocr, transcriber
+from replayflow.services import capture_target, click_marker, exporter, ffmpeg, ocr, transcriber
 
 log = logging.getLogger(__name__)
 
@@ -148,7 +148,8 @@ class Pipeline:
         if not clicks:
             return []
         cfg = self.session.config
-        scale = min(cfg.max_width, width := ffmpeg.video_width(self.video)) / width
+        width, height = ffmpeg.video_size(self.video)
+        scale = min(cfg.max_width, width) / width
         events = []
         for i, c in enumerate(clicks, start=1):
             if self.cancel.is_set():
@@ -157,10 +158,15 @@ class Pipeline:
             ffmpeg.extract_frame_at(self.video, c.t - CLICK_LEAD_S, out, cfg, self.cancel)
             if not out.exists():  # clique depois do fim do vídeo
                 continue
-            target, near = self._click_target(out, c.data["x"] * scale, c.data["y"] * scale)  # antes do círculo
-            click_marker.mark(out, c.data["x"], c.data["y"], scale, cfg.jpg_quality)
+            # Clique em coordenadas da área de trabalho → posição no vídeo (monitor ou janela gravada).
+            pos = capture_target.to_video(c.data["x"], c.data["y"], cfg.capture_region, width, height)
+            target = near = ""
+            if pos is not None:
+                target, near = self._click_target(out, pos[0] * scale, pos[1] * scale)  # antes do círculo
+                click_marker.mark(out, pos[0], pos[1], scale, cfg.jpg_quality)
             events.append(TimelineEvent(t=c.t, source="frame", kind="click", data={
-                "file": out.name, "scene_change": False, "click": {"x": c.data["x"], "y": c.data["y"]}, "target": target, "near": near}))
+                "file": out.name, "scene_change": False, "click": {"x": c.data["x"], "y": c.data["y"]},
+                "target": target, "near": near, "outside": pos is None}))
         log.info("fotos de clique geradas: %d", len(events))
         return events
 

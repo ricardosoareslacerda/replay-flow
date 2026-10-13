@@ -81,6 +81,19 @@ def has_audio(video: Path) -> bool:
     return audio_streams(video) > 0
 
 
+def video_size(video: Path) -> tuple[int, int]:
+    out = subprocess.run(
+        [_bin("ffprobe"), "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height",
+         "-of", "csv=p=0", str(video)],
+        capture_output=True, text=True, **_NO_WINDOW,
+    )
+    try:
+        w, h = out.stdout.strip().split(",")[:2]
+        return int(w), int(h)
+    except ValueError:
+        raise ReplayFlowError(f"Não foi possível ler o tamanho de {video.name}: {out.stderr.strip()}") from None
+
+
 def video_width(video: Path) -> int:
     out = subprocess.run(
         [_bin("ffprobe"), "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width", "-of", "csv=p=0", str(video)],

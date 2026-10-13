@@ -90,6 +90,8 @@ def describe_action(e: TimelineEvent, target: str = "") -> str:
 
 def _frame_note(frame: TimelineEvent) -> str:
     if frame.kind == "click":
+        if frame.data.get("outside"):
+            return " (clique fora da área gravada: a foto mostra a área, sem o ponto)"
         return " (foto do clique, ponto marcado em vermelho)"
     return " (mudança de tela)" if frame.data.get("scene_change") else ""
 

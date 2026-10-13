@@ -6,9 +6,10 @@ import logging
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 
-from PyQt6.QtCore import QObject, QSettings, Qt, QThread, QUrl, pyqtSignal
+from PyQt6.QtCore import QObject, QSettings, Qt, QThread, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import QDesktopServices, QGuiApplication
 from PyQt6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog, QFormLayout, QGroupBox,
@@ -21,7 +22,7 @@ from replayflow.core.errors import CancelledError, ReplayFlowError
 from replayflow.core.pipeline import INPUT_EVENTS_FILE, Pipeline
 from replayflow.models import AppConfig, FrameMode, PipelineConfig, Session, Stage, StageStatus
 from replayflow.models.config import portable_home
-from replayflow.services import audio_devices, exporter, ffmpeg
+from replayflow.services import audio_devices, capture_target, exporter, ffmpeg
 from replayflow.services.input_capture import InputCapture
 
 LANGUAGES = {"pt-BR": "pt", "en": "en", "es": "es"}
@@ -83,6 +84,7 @@ class MainWindow(QMainWindow):
         self.obs = None
         self.obs_proc: subprocess.Popen[bytes] | None = None
         self.paused = False
+        self.rec_t0 = self.rec_paused_at = self.rec_paused_total = 0.0
         self.auto_flow = False
         self.reviewed = self.sent = False  # passos 4 e 5 do guia, por sessão aberta
         self._build()
@@ -161,9 +163,30 @@ class MainWindow(QMainWindow):
         buttons.addWidget(self.btn_discard)
         self.progress = QProgressBar(maximum=len(Stage))
         self.stage_label = QLabel()
-        for w in (self.steps_label, self.hint):
-            gl.addWidget(w)
+        self.timer_label = QLabel()
+        self.timer_label.setStyleSheet("font-size:18px;font-weight:bold;color:#e5484d;")
+        self.timer_label.setVisible(False)
+        header = QHBoxLayout()
+        header.addWidget(self.steps_label, stretch=1)
+        header.addWidget(self.timer_label)
+        self.target = QComboBox()
+        self.target.setToolTip("Com dois monitores, escolha qual gravar; ou grave só a janela da atividade")
+        refresh = QPushButton("Atualizar lista")
+        refresh.clicked.connect(self._load_targets)
+        target_row = QHBoxLayout()
+        target_row.addWidget(QLabel("O que gravar:"))
+        target_row.addWidget(self.target, stretch=1)
+        target_row.addWidget(refresh)
+        self.target_box = QWidget()
+        self.target_box.setLayout(target_row)
+        target_row.setContentsMargins(0, 0, 0, 0)
+        self._load_targets()
+        self.clock = QTimer(self)
+        self.clock.timeout.connect(self._tick)
+        gl.addLayout(header)
+        gl.addWidget(self.hint)
         gl.addLayout(name_row)
+        gl.addWidget(self.target_box)
         gl.addWidget(self.session_label)
         gl.addLayout(buttons)
         gl.addWidget(self.progress)
@@ -255,6 +278,22 @@ class MainWindow(QMainWindow):
         combo.currentIndexChanged.connect(lambda _: self.settings.setValue(key, combo.currentData()))
         return combo
 
+    def _load_targets(self) -> None:
+        """Monitores primeiro (o principal no topo), depois as janelas abertas."""
+        current = self.target.currentText()
+        self.target.clear()
+        for t in [*capture_target.monitors(), *capture_target.windows()]:
+            self.target.addItem(t.label, t)
+        if self.target.count() == 0:
+            self.target.addItem("Tela inteira (monitor principal)", None)
+        index = self.target.findText(current)
+        self.target.setCurrentIndex(max(index, 0))
+
+    def _tick(self) -> None:
+        paused = self.rec_paused_total + (time.monotonic() - self.rec_paused_at if self.paused else 0.0)
+        elapsed = int(time.monotonic() - self.rec_t0 - paused)
+        self.timer_label.setText(f"{'⏸' if self.paused else '⏺'} {elapsed // 60:02d}:{elapsed % 60:02d}")
+
     def _wire_logging(self) -> None:
         self.log_bridge = LogBridge()
         self.log_bridge.line.connect(self.log.appendPlainText)
@@ -276,6 +315,7 @@ class MainWindow(QMainWindow):
             jpg_quality=self.quality.value(),
             input_offset_s=self.session.config.input_offset_s if self.session else 0.0,  # medido na gravação
             redact_sensitive=self.chk_redact.isChecked(),
+            capture_region=self.session.config.capture_region if self.session else None,
         )
 
     def _load_config_into_form(self, cfg: PipelineConfig) -> None:
@@ -304,6 +344,8 @@ class MainWindow(QMainWindow):
         self.act_prompt.setEnabled(idle and has_session)
         self.act_cancel.setEnabled(busy)
         self.btn_pause.setVisible(recording)
+        self.target_box.setVisible(has_session and not has_video and idle)
+        self.timer_label.setVisible(recording)
         self.btn_discard.setVisible(recording)
         self.progress.setVisible(has_video)
         self.stage_label.setVisible(has_video)
@@ -431,7 +473,7 @@ class MainWindow(QMainWindow):
         if not name:
             return self._error("Escreva qual atividade você vai mostrar.")
         base = Path(self.base_path)
-        config = self._config().model_copy(update={"input_offset_s": 0.0})  # não herda a sincronia da sessão anterior
+        config = self._config().model_copy(update={"input_offset_s": 0.0, "capture_region": None})  # não herda a sincronia da sessão anterior
         self.session = session_store.create_session(base, name, config)
         self.reviewed = self.sent = False
         logging.getLogger("replayflow").info(f"atividade criada: {self.session.root}")
@@ -518,6 +560,13 @@ class MainWindow(QMainWindow):
             offset = 0.0
             if self.obs:
                 self.obs.ensure_display()
+                chosen = self.target.currentData()
+                if chosen is not None:
+                    region = (capture_target.client_region(chosen.hwnd) if chosen.kind == "window" else chosen.region)
+                    if region is None:
+                        raise ReplayFlowError("A janela escolhida não está mais aberta. Clique em Atualizar lista.")
+                    self.obs.set_target(chosen)
+                    self._set_capture_region(region)
                 self.obs.set_devices(self.mic.currentData(), self.out.currentData())
                 log.info(f"microfone: {self.mic.currentText()} · som do computador: {self.out.currentText()}")
                 if self.obs.prepare_tracks():
@@ -527,6 +576,9 @@ class MainWindow(QMainWindow):
                     offset = self.capture.started_at - video_start
                     log.info(f"sincronia: vídeo começou {-offset:.2f}s depois da captura de input")
             self._set_input_offset(offset)
+            self.rec_t0, self.rec_paused_total = time.monotonic(), 0.0
+            self._tick()
+            self.clock.start(500)
             log.info("gravação iniciada" + (" (OBS)" if self.obs else "") + (" + captura de input" if self.capture else ""))
         except ReplayFlowError as e:
             if self.capture:
@@ -534,6 +586,12 @@ class MainWindow(QMainWindow):
             self.obs = self.capture = None
             self._error(str(e))
         self._refresh()
+
+    def _set_capture_region(self, region: tuple[int, int, int, int]) -> None:
+        assert self.session
+        config = self.session.config.model_copy(update={"capture_region": tuple(region)})
+        self.session = self.session.model_copy(update={"config": config})
+        session_store.save(self.session)
 
     def _set_input_offset(self, offset: float) -> None:
         assert self.session
@@ -548,12 +606,14 @@ class MainWindow(QMainWindow):
                 self.obs.resume()
             if self.capture:
                 self.capture.resume()
+            self.rec_paused_total += time.monotonic() - self.rec_paused_at
             log.info("gravação retomada")
         else:
             if self.capture:
                 self.capture.pause()
             if self.obs:
                 self.obs.pause()
+            self.rec_paused_at = time.monotonic()
             log.info("gravação pausada: nada é gravado nem registrado até retomar")
         self.paused = not self.paused
         self._refresh()
@@ -590,6 +650,7 @@ class MainWindow(QMainWindow):
             self.capture.stop()
         video = self.obs.stop() if self.obs else None
         self.capture = self.obs = None
+        self.clock.stop()
         if video:
             video.unlink(missing_ok=True)
         (self.session.root / "raw" / INPUT_EVENTS_FILE).unlink(missing_ok=True)
@@ -604,6 +665,7 @@ class MainWindow(QMainWindow):
             self.capture.stop()
         video = self.obs.stop() if self.obs else None
         self.capture = self.obs = None
+        self.clock.stop()
         if video:
             self.session = session_store.import_video(self.session, video)
             self.reviewed = self.sent = False
