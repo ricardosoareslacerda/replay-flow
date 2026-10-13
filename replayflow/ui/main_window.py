@@ -279,8 +279,11 @@ class MainWindow(QMainWindow):
         self._refresh()
 
     def _import_video(self) -> None:
-        f, _ = QFileDialog.getOpenFileName(self, "Vídeo do OBS", "", "Vídeos (*.mkv *.mp4 *.mov *.flv *.webm)")
+        home = portable_home()  # portátil: abre nas gravações da própria pasta; depois, na última usada
+        start = self.settings.value("video_dir", str(home / "Gravacoes") if home else "")
+        f, _ = QFileDialog.getOpenFileName(self, "Vídeo gravado", start, "Vídeos (*.mkv *.mp4 *.mov *.flv *.webm)")
         if f and self.session:
+            self.settings.setValue("video_dir", str(Path(f).parent))
             self.session = session_store.import_video(self.session, Path(f))
             logging.getLogger("replayflow").info(f"vídeo importado: {f}")
             self._refresh()

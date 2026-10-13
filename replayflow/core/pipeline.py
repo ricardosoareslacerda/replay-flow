@@ -142,7 +142,7 @@ class Pipeline:
             click_marker.mark(out, c.data["x"], c.data["y"], scale, cfg.jpg_quality)
             events.append(TimelineEvent(t=c.t, source="frame", kind="click", data={
                 "file": out.name, "scene_change": False, "click": {"x": c.data["x"], "y": c.data["y"]}}))
-        log.info("%d fotos de clique geradas", len(events))
+        log.info("fotos de clique geradas: %d", len(events))
         return events
 
     def _stage_ocr(self) -> bool:
