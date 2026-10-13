@@ -1,3 +1,4 @@
+import pytest
 from replayflow.models import TimelineEvent
 from replayflow.services.input_capture import InputRecorder
 
@@ -59,6 +60,7 @@ def test_click_flushes_pending_text() -> None:
 
 
 def test_capture_pause_drops_events_and_discounts_paused_time(tmp_path, monkeypatch) -> None:
+    pytest.importorskip("pynput")  # sem display (CI/Linux headless) o pynput não carrega
     from replayflow.services import input_capture as ic
 
     clock = [100.0]
