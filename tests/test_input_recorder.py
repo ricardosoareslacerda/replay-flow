@@ -95,3 +95,14 @@ def test_paste_records_clipboard_text_but_not_in_secret_mode() -> None:
 
     hotkeys = [e.data for e in events if e.kind == "hotkey"]
     assert hotkeys == [{"keys": "ctrl+v", "pasted": "fatura_lopes_ricardo_202610.pdf"}, {"keys": "ctrl+?"}]
+
+
+def test_numpad_keys_become_digits() -> None:
+    from types import SimpleNamespace
+
+    from replayflow.services.input_capture import InputCapture
+
+    assert InputCapture._key_name(SimpleNamespace(char=None, vk=0x61)) == ("", "1")
+    assert InputCapture._key_name(SimpleNamespace(char=None, vk=0x6E)) == ("", ",")
+    assert InputCapture._key_name(SimpleNamespace(char="a", vk=0x41)) == ("", "a")
+    assert InputCapture._key_name(SimpleNamespace(char=None, vk=None, name="enter")) == ("enter", None)

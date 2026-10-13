@@ -33,6 +33,8 @@ def active_window_title() -> str | None:
     return buf.value or None
 
 
+# Teclado numérico (VK_NUMPAD0..9, *, +, -, decimal, /): o pynput entrega só o código, sem o caractere.
+NUMPAD_CHARS = {**{0x60 + i: str(i) for i in range(10)}, 0x6A: "*", 0x6B: "+", 0x6D: "-", 0x6E: ",", 0x6F: "/"}
 CLIPBOARD_MAX_CHARS = 300
 
 
@@ -198,7 +200,14 @@ class InputCapture:
             if len(char) == 1 and ord(char) < 32:  # Ctrl+letra chega como caractere de controle
                 return "", chr(ord(char) + 96)
             return "", char if char.isprintable() else None
-        return getattr(key, "name", str(key)), None
+        name = getattr(key, "name", None)
+        if name:
+            return name, None
+        # Teclas sem caractere traduzido pelo pynput (ex.: teclado numérico no Windows chegam como <97>).
+        vk = getattr(key, "vk", None)
+        if vk in NUMPAD_CHARS:
+            return "", NUMPAD_CHARS[vk]
+        return str(key), None
 
     def _press(self, key: object) -> None:
         name, char = self._key_name(key)
