@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import logging
+import subprocess
 import threading
 from pathlib import Path
 
-from PyQt6.QtCore import QObject, QSettings, QThread, QUrl, pyqtSignal
+from PyQt6.QtCore import QObject, QSettings, Qt, QThread, QUrl, pyqtSignal
 from PyQt6.QtGui import QDesktopServices, QGuiApplication
 from PyQt6.QtWidgets import (
     QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QInputDialog,
@@ -76,6 +77,7 @@ class MainWindow(QMainWindow):
         self.worker: Worker | None = None
         self.capture: InputCapture | None = None
         self.obs = None
+        self.obs_proc: subprocess.Popen[bytes] | None = None
         self._build()
         self._wire_logging()
         self._apply_private_mode()
@@ -282,14 +284,8 @@ class MainWindow(QMainWindow):
             return self._stop_record()
         assert self.session
         log = logging.getLogger("replayflow")
-        password, ok = QInputDialog.getText(self, "OBS", "Senha do obs-websocket (vazio se não houver):",
-                                            QLineEdit.EchoMode.Password)
-        if not ok:
-            return
         try:
-            from replayflow.services.obs import ObsRecorder
-
-            self.obs = ObsRecorder(password=password or None)  # senha só em memória
+            self.obs = self._connect_obs()
         except ReplayFlowError as e:
             answer = QMessageBox.question(
                 self, "ReplayFlow", f"{e}\n\nCapturar apenas o input? Inicie a gravação no OBS manualmente "
@@ -309,6 +305,25 @@ class MainWindow(QMainWindow):
             self.obs = self.capture = None
             self._error(str(e))
         self._refresh()
+
+    def _connect_obs(self):  # type: ignore[no-untyped-def]
+        """Abre o OBS portátil se preciso e conecta; só pede senha se a conexão sem senha falhar."""
+        from replayflow.services.obs import ObsRecorder, launch_portable_obs, portable_obs_exe
+
+        if portable_obs_exe() and not self.obs_proc:
+            logging.getLogger("replayflow").info("abrindo o OBS (minimizado na bandeja)…")
+            QGuiApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+            try:
+                self.obs_proc = launch_portable_obs()
+            finally:
+                QGuiApplication.restoreOverrideCursor()
+        try:
+            return ObsRecorder()
+        except ReplayFlowError:
+            password, ok = QInputDialog.getText(self, "OBS", "Senha do obs-websocket:", QLineEdit.EchoMode.Password)
+            if not ok:
+                raise
+            return ObsRecorder(password=password or None)  # senha só em memória
 
     def _stop_record(self) -> None:
         assert self.session
@@ -381,4 +396,6 @@ class MainWindow(QMainWindow):
         if self.thread:
             self.thread.quit()
             self.thread.wait(5000)
+        if self.obs_proc and self.obs_proc.poll() is None:  # fecha o OBS só se foi o ReplayFlow que o abriu
+            self.obs_proc.terminate()
         super().closeEvent(event)
