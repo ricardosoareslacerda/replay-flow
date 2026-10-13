@@ -1,4 +1,4 @@
-"""Ponto de entrada. CLI enquanto a UI PyQt6 (etapa 3) não chega."""
+"""Ponto de entrada: sem argumentos abre a UI; subcomandos para uso via terminal."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from replayflow.services import transcriber
 def main(argv: list[str] | None = None) -> None:
     config = AppConfig()
     parser = argparse.ArgumentParser(prog="replayflow")
-    sub = parser.add_subparsers(dest="cmd", required=True)
+    sub = parser.add_subparsers(dest="cmd")
     new = sub.add_parser("new", help="cria uma sessão")
     new.add_argument("name")
     new.add_argument("--base-dir", type=Path, default=config.base_dir)
@@ -26,6 +26,10 @@ def main(argv: list[str] | None = None) -> None:
     dl = sub.add_parser("download-model", help="baixa um modelo whisper (única ação com rede)")
     dl.add_argument("model", choices=["tiny", "base", "small", "medium", "large-v3"])
     args = parser.parse_args(argv)
+    if args.cmd is None:
+        from replayflow.ui.app import run
+
+        return run()
 
     network_guard.apply(config.private_mode and args.cmd != "download-model")
     try:

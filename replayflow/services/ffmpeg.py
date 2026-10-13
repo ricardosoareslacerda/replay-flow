@@ -36,7 +36,7 @@ def _bin(name: str) -> str:
 
 def _run(args: list[str], cancel: threading.Event | None = None) -> str:
     """Executa e devolve o stderr (onde o FFmpeg escreve showinfo). Cancela matando o processo."""
-    log.info("ffmpeg", extra={"cmd": args})
+    log.info("executando %s", Path(args[0]).stem, extra={"cmd": args})
     proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                             encoding="utf-8", errors="replace")
     result: dict[str, str] = {}
@@ -143,7 +143,8 @@ def extract_frames(video: Path, frames_dir: Path, cfg: PipelineConfig,
             target = frames_dir / f"frame_{i:06d}.jpg"
             shutil.move(f.file, target)
             result.append(ExtractedFrame(target, f.t, f.scene_change))
-    log.info("frames extraídos", extra={"candidates": len(candidates), "kept": len(result)})
+    log.info("%d frames mantidos de %d candidatos", len(result), len(candidates),
+             extra={"candidates": len(candidates), "kept": len(result)})
     return result
 
 
