@@ -128,12 +128,16 @@ def _script_lines(steps: list[Step]) -> list[str]:
     """Roteiro em uma linha por passo: o que o Claude lê primeiro para entender a sequência."""
     lines, window, shown = [], "", ""
     for s in (s for s in steps if s.relevant):
-        parts = []
+        parts, sounds = [], 0
         for a in s.actions:
             if a.source == "window":
                 window = a.data["title"]
+            elif a.source == "audio":
+                sounds += 1  # vários avisos sonoros no mesmo passo viram um item só
             else:
                 parts.append(_describe(s, a))
+        if sounds:
+            parts.append("som do computador" + (f" ({sounds}x)" if sounds > 1 else ""))
         what = "; ".join(parts) or ("mudança de tela" if s.frame.data.get("scene_change") else "observação")
         said = f" — fala: \"{s.narration}\"" if s.narration else ""
         win = f" [janela: {window}]" if window and window != shown else ""  # só quando muda
