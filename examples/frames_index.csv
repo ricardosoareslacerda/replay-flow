@@ -1,0 +1,7 @@
+frame_file,timestamp_seconds,timestamp_human,ocr_file,ocr_chars,scene_change,notes
+frame_000001.jpg,0.000,00:00,frame_000001.txt,66,false,"janela ativa: Gmail - Google Chrome; clique esquerdo em (812, 344)"
+frame_000002.jpg,8.400,00:08,frame_000002.txt,37,true,"clique esquerdo em (1104, 612)"
+frame_000003.jpg,21.000,00:21,frame_000003.txt,63,true,janela ativa: Adobe Acrobat Reader; modo sigiloso ligado; digitou [SEGREDO: 5 caracteres]; tecla enter; modo sigiloso desligado
+frame_000004.jpg,30.200,00:30,frame_000004.txt,141,true,
+frame_000005.jpg,35.200,00:35,,0,false,atalho ctrl+c
+frame_000006.jpg,50.000,00:50,frame_000006.txt,72,true,"atalho ctrl+shift+s; digitou ""xpto_2026-10_1284,37.pdf""; tecla enter"
