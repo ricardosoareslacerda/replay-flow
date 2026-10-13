@@ -60,7 +60,8 @@ def describe_action(e: TimelineEvent, target: str = "") -> str:
         case "mouse", "click":
             button = _BUTTONS.get(e.data.get("button", ""), e.data.get("button", ""))
             where = f"em \"{target}\" " if target else ""
-            return f"clique {button} {where}(posição {e.data.get('x')}, {e.data.get('y')})"
+            kind = "duplo clique" if e.data.get("double") else "clique"
+            return f"{kind} {button} {where}(posição {e.data.get('x')}, {e.data.get('y')})"
         case "key", "text":
             return f"digitou \"{e.data['text']}\""
         case "key", "secret":
@@ -125,7 +126,7 @@ def _same_screen(a: str, b: str) -> bool:
 
 def _script_lines(steps: list[Step]) -> list[str]:
     """Roteiro em uma linha por passo: o que o Claude lê primeiro para entender a sequência."""
-    lines, window = [], ""
+    lines, window, shown = [], "", ""
     for s in (s for s in steps if s.relevant):
         parts = []
         for a in s.actions:
@@ -135,7 +136,8 @@ def _script_lines(steps: list[Step]) -> list[str]:
                 parts.append(_describe(s, a))
         what = "; ".join(parts) or ("mudança de tela" if s.frame.data.get("scene_change") else "observação")
         said = f" — fala: \"{s.narration}\"" if s.narration else ""
-        win = f" [janela: {window}]" if window else ""
+        win = f" [janela: {window}]" if window and window != shown else ""  # só quando muda
+        shown = window
         lines.append(f"{s.index}. **[{mmss(s.start)}]**{win} {what}{said}")
     return lines
 
@@ -208,6 +210,21 @@ def build_package(session: Session, steps: list[Step], events: list[TimelineEven
         *[f"{i}. {req}" for i, req in enumerate(ANALYSIS_REQUESTS, start=1)],
         "",
         "Cite o passo e o timestamp (MM:SS) que embasam cada conclusão. Sinalize o que for inferido sem evidência direta.",
+        "",
+        "## Como ler este pacote",
+        "",
+        "Tudo está no mesmo relógio do vídeo (MM:SS desde o início da gravação), e é o tempo que liga as fontes:",
+        "",
+        "- **Passo** = intervalo entre duas imagens da tela. Cada clique gera uma foto própria (tirada um instante "
+        "antes do clique, com o ponto marcado em vermelho) e abre um novo passo.",
+        "- **Ações** = o que o usuário fez naquele intervalo: janela ativa, clique (com o rótulo lido sob o cursor), "
+        "texto digitado, atalhos e sons do computador. Capturadas do teclado e do mouse, não inferidas.",
+        "- **Narração** = só as palavras ditas dentro daquele intervalo (a transcrição tem o tempo de cada palavra). "
+        "É a intenção do usuário: use-a para explicar o porquê de cada ação.",
+        "- **OCR** = texto lido automaticamente da imagem da tela. Pode ter erros de leitura (letras trocadas, "
+        "palavras coladas): corrija pelo contexto e prefira a narração e o rótulo do clique quando divergirem.",
+        "- Para conferir algo, cruze pelo tempo: a fala em 00:19 explica o clique em 00:19, que aparece na foto "
+        "do clique e no OCR daquele passo. Se as fotos forem anexadas, o nome do arquivo está no título do passo.",
         "",
         "## Roteiro passo a passo",
         "",

@@ -41,7 +41,7 @@ class PipelineConfig(BaseModel):
     whisper_model: WhisperModel = "small"
     transcription_enabled: bool = True
     ocr_enabled: bool = True
-    ocr_lang: str = "por"
+    ocr_lang: str = "por+eng"  # telas de trabalho misturam português e inglês; só "por" lê inglês errado
     frame_mode: FrameMode = FrameMode.BOTH
     frame_interval_s: float = Field(default=5.0, gt=0)
     scene_threshold: float = Field(default=0.3, gt=0, lt=1)

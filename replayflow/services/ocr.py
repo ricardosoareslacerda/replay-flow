@@ -27,20 +27,31 @@ def _pytesseract():  # type: ignore[no-untyped-def]
     return pytesseract
 
 
+def prepare(img):  # type: ignore[no-untyped-def]
+    """Cinza e 2x maior: texto de interface é pequeno e o frame já foi reduzido; sem isso o Tesseract
+    cola palavras ("Splitnarration") e troca letras."""
+    from PIL import Image, ImageOps
+
+    gray = ImageOps.grayscale(img)
+    return gray.resize((gray.width * 2, gray.height * 2), Image.Resampling.LANCZOS)
+
+
 def run(frames: list[Path], ocr_dir: Path, lang: str, cancel: threading.Event | None = None) -> dict[Path, str]:
     """Gera ocr/<frame>.txt para cada frame. Retorna {frame: texto}."""
     from PIL import Image
 
     tess = _pytesseract()
-    if lang not in tess.get_languages(config=""):
-        raise ToolMissingError(f"Idioma '{lang}' do Tesseract não instalado (pacote tesseract-ocr-{lang}).")
+    installed = tess.get_languages(config="")
+    for code in lang.split("+"):
+        if code not in installed:
+            raise ToolMissingError(f"Idioma '{code}' do Tesseract não instalado (pacote tesseract-ocr-{code}).")
     texts: dict[Path, str] = {}
     for frame in frames:
         if cancel is not None and cancel.is_set():
             raise CancelledError()
         try:
             with Image.open(frame) as img:
-                text = tess.image_to_string(img, lang=lang).strip()
+                text = tess.image_to_string(prepare(img), lang=lang).strip()
         except tess.TesseractError as e:
             raise ReplayFlowError(f"Tesseract falhou em {frame.name}: {e}") from e
         (ocr_dir / f"{frame.stem}.txt").write_text(text, encoding="utf-8")
@@ -56,7 +67,7 @@ def text_at(image: Path, x: float, y: float, lang: str, half_w: int = 260, half_
     with Image.open(image) as img:
         left, top = max(0, int(x) - half_w), max(0, int(y) - half_h)
         crop = img.crop((left, top, min(img.width, int(x) + half_w), min(img.height, int(y) + half_h)))
-        crop = crop.resize((crop.width * 2, crop.height * 2))  # texto de interface é pequeno; ampliar ajuda o OCR
+        crop = prepare(crop)
         try:
             data = tess.image_to_data(crop, lang=lang, config="--psm 11", output_type=tess.Output.DICT)
         except tess.TesseractError:

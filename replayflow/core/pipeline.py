@@ -80,7 +80,7 @@ class Pipeline:
         """Eventos de clique/tecla já no relógio do vídeo (input_offset_s vem da sincronia com o OBS)."""
         raw = self.layout.raw / INPUT_EVENTS_FILE
         offset = self.session.config.input_offset_s
-        return [e.model_copy(update={"t": max(0.0, e.t + offset)}) for e in timeline_store.read(raw)]
+        return merge_double_clicks([e.model_copy(update={"t": max(0.0, e.t + offset)}) for e in timeline_store.read(raw)])
 
     def _stage_audio(self) -> bool:
         tracks = ffmpeg.audio_streams(self.video)
@@ -184,6 +184,23 @@ class Pipeline:
     def _stage_export(self) -> bool:
         exporter.export(self.session, tool_versions())
         return True
+
+
+def merge_double_clicks(events: list[TimelineEvent], window_s: float = 0.5, radius: int = 4) -> list[TimelineEvent]:
+    """Dois cliques no mesmo ponto em menos de meio segundo viram um duplo clique (um passo, uma foto)."""
+    out: list[TimelineEvent] = []
+    last: TimelineEvent | None = None
+    for e in events:
+        if e.source == "mouse" and e.kind == "click":
+            if (last is not None and e.t - last.t <= window_s and e.data.get("button") == last.data.get("button")
+                    and abs(e.data["x"] - last.data["x"]) <= radius and abs(e.data["y"] - last.data["y"]) <= radius
+                    and not last.data.get("double")):
+                out[out.index(last)] = last.model_copy(update={"data": {**last.data, "double": True}})
+                last = None
+                continue
+            last = e
+        out.append(e)
+    return out
 
 
 def tool_versions() -> dict[str, str]:

@@ -152,3 +152,13 @@ def test_click_photo_uses_sync_offset_and_marks_the_point(session: Session, monk
     with Image.open(session.root / "frames" / "click_000001.jpg") as img:
         r, g, b = img.getpixel((19, 1))  # 1920 -> 1280: centro em (0.67, 1.33), anel vermelho com raio 21
     assert r > 200 and g < 100
+
+def test_double_click_becomes_one_event() -> None:
+    from replayflow.core.pipeline import merge_double_clicks
+
+    def click(t: float, x: int) -> TimelineEvent:
+        return TimelineEvent(t=t, source="mouse", kind="click", data={"x": x, "y": 10, "button": "left"})
+
+    merged = merge_double_clicks([click(1.0, 5), click(1.2, 6), click(3.0, 5), click(5.0, 5), click(5.3, 90)])
+
+    assert [(e.t, e.data.get("double", False)) for e in merged] == [(1.0, True), (3.0, False), (5.0, False), (5.3, False)]
