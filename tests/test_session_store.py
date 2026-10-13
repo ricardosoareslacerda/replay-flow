@@ -51,3 +51,11 @@ def test_stage_done_is_invalidated_by_config_change(tmp_path: Path) -> None:
     changed = session.model_copy(update={"config": PipelineConfig(max_width=640)})
 
     assert not changed.is_done(Stage.FRAMES)
+
+
+def test_portable_home_sets_default_base_dir(monkeypatch, tmp_path: Path) -> None:
+    from replayflow.models.config import default_base_dir
+
+    monkeypatch.setenv("REPLAYFLOW_HOME", str(tmp_path))
+
+    assert default_base_dir() == tmp_path / "Sessions"

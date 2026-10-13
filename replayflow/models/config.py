@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import sys
 from enum import StrEnum
 from pathlib import Path
@@ -17,7 +18,15 @@ class FrameMode(StrEnum):
     BOTH = "both"
 
 
+def portable_home() -> Path | None:
+    """Raiz da instalação portátil (definida pelo ReplayFlow.bat), ou None."""
+    home = os.environ.get("REPLAYFLOW_HOME")
+    return Path(home) if home else None
+
+
 def default_base_dir() -> Path:
+    if home := portable_home():
+        return home / "Sessions"
     if sys.platform == "win32":
         return Path.home() / "Pipeline-Capture" / "Sessions"
     return Path.home() / "ReplayFlow" / "Sessions"

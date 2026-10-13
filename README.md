@@ -40,6 +40,15 @@ replayflow download-model small
 
 O Tesseract é encontrado automaticamente em `C:\Program Files\Tesseract-OCR\` mesmo fora do `PATH`.
 
+### Windows portátil (pasta única, nada instalado no sistema)
+
+```powershell
+git clone https://github.com/ricardosoareslacerda/replay-flow.git
+powershell -ExecutionPolicy Bypass -File replay-flow\scripts\build-portable.ps1 -Target F:\Pipeline-Capture -Model small
+```
+
+Monta `F:\Pipeline-Capture` com Python 3.12 embeddable, dependências, FFmpeg, Tesseract (+ português), modelo Whisper e o lançador `ReplayFlow.bat`. Sessões e preferências ficam dentro da própria pasta (`Sessions\`, `settings.ini`), então ela pode ser copiada para outro PC ou pendrive. Abra com duplo clique em `ReplayFlow.bat`; pela linha de comando, `ReplayFlow.bat process <pasta-da-sessão>`. Para atualizar, rode o script de novo.
+
 ### macOS
 
 ```bash

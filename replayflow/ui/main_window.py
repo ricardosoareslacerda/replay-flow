@@ -18,6 +18,7 @@ from replayflow.core import network_guard, session_store
 from replayflow.core.errors import CancelledError, ReplayFlowError
 from replayflow.core.pipeline import INPUT_EVENTS_FILE, Pipeline
 from replayflow.models import AppConfig, FrameMode, PipelineConfig, Session, Stage, StageStatus
+from replayflow.models.config import portable_home
 from replayflow.services import exporter
 from replayflow.services.input_capture import InputCapture
 
@@ -67,7 +68,9 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("ReplayFlow")
-        self.settings = QSettings("ReplayFlow", "ReplayFlow")
+        home = portable_home()  # portátil: preferências num .ini da própria pasta, não no registro
+        self.settings = (QSettings(str(home / "settings.ini"), QSettings.Format.IniFormat) if home
+                         else QSettings("ReplayFlow", "ReplayFlow"))
         self.session: Session | None = None
         self.thread: QThread | None = None
         self.worker: Worker | None = None
