@@ -152,8 +152,13 @@ class MainWindow(QMainWindow):
         self.btn_pause = QPushButton("Pausar")
         self.btn_pause.setMinimumHeight(44)
         self.btn_pause.clicked.connect(self._toggle_pause)
+        self.btn_discard = QPushButton("Cancelar gravação")
+        self.btn_discard.setMinimumHeight(44)
+        self.btn_discard.setToolTip("Para e descarta esta gravação, sem processar nada")
+        self.btn_discard.clicked.connect(self._discard_record)
         buttons.addWidget(self.btn_next, stretch=1)
         buttons.addWidget(self.btn_pause)
+        buttons.addWidget(self.btn_discard)
         self.progress = QProgressBar(maximum=len(Stage))
         self.stage_label = QLabel()
         for w in (self.steps_label, self.hint):
@@ -299,6 +304,7 @@ class MainWindow(QMainWindow):
         self.act_prompt.setEnabled(idle and has_session)
         self.act_cancel.setEnabled(busy)
         self.btn_pause.setVisible(recording)
+        self.btn_discard.setVisible(recording)
         self.progress.setVisible(has_video)
         self.stage_label.setVisible(has_video)
         self.btn_pause.setText("Retomar" if self.paused else "Pausar")
@@ -333,17 +339,15 @@ class MainWindow(QMainWindow):
         if not all(st.status in (StageStatus.DONE, StageStatus.SKIPPED) for st in s.stages.values()):
             return 3, "Próximo: processar a gravação", "Transforma o vídeo em transcrição, fotos dos cliques, " \
                 "texto das telas e o pacote para o Claude.", True
-        if not self.reviewed:
-            return 4, "Próximo: revisar o pacote", "Abre o pacote gerado. Confira se não há senhas, CPFs ou dados " \
-                "de clientes antes de enviar. \"Reproduzir vídeo\" mostra a gravação.", True
         if not self.sent:
-            return 5, "Próximo: enviar ao Claude", "Copia o prompt, mostra o arquivo do pacote e abre o Claude no " \
-                "navegador. Nada é enviado sozinho: você cola e anexa.", True
-        return 6, "Registrar outra atividade", "Concluído! Para mostrar outra atividade, clique abaixo.", True
+            return 4, "Próximo: revisar e enviar ao Claude", "Um clique: abre o pacote para você conferir (senhas, " \
+                "CPFs, dados de clientes), copia o prompt, mostra o arquivo e abre o Claude no navegador. " \
+                "Nada é enviado sozinho: você revisa, cola e anexa.", True
+        return 5, "Registrar outra atividade", "Concluído! Para mostrar outra atividade, clique abaixo.", True
 
     def _refresh_guide(self) -> None:
         step, text, hint, enabled = self._guide()
-        names = ["Nomear a atividade", "Gravar", "Processar", "Revisar", "Enviar ao Claude"]
+        names = ["Nomear a atividade", "Gravar", "Processar", "Revisar e enviar ao Claude"]
         parts = []
         for i, name in enumerate(names, start=1):
             label = f"{'✔' if i < step else i} {name}"
@@ -366,8 +370,6 @@ class MainWindow(QMainWindow):
         elif step == 3:
             self._process()
         elif step == 4:
-            self._review()
-        elif step == 5:
             self._send_to_claude()
         else:
             self._start_over()
@@ -376,14 +378,11 @@ class MainWindow(QMainWindow):
         assert self.session
         return self.session.root / "export" / "claude_package.md"
 
-    def _review(self) -> None:
-        QDesktopServices.openUrl(QUrl.fromLocalFile(str(self._package_file())))
-        self.reviewed = True
-        self._refresh()
-
     def _send_to_claude(self) -> None:
-        """Só prepara: copia o prompt, seleciona o arquivo no Explorer e abre o Claude. O envio é do usuário."""
+        """Revisão e envio num passo: abre o pacote, copia o prompt, seleciona o arquivo no Explorer e abre o
+        Claude. O envio é sempre do usuário."""
         package = self._package_file()
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(package)))
         self._copy_prompt()
         if sys.platform == "win32":
             subprocess.Popen(["explorer", "/select,", str(package)])
@@ -392,7 +391,8 @@ class MainWindow(QMainWindow):
         QDesktopServices.openUrl(QUrl("https://claude.ai/new"))
         QMessageBox.information(
             self, "Enviar ao Claude",
-            "Abri o Claude no navegador e a pasta com o pacote.\n\n"
+            "Abri o pacote para revisão, a pasta com o arquivo e o Claude no navegador.\n\n"
+            "0. Passe os olhos no pacote: se houver algo que não deve ir, apague antes de enviar.\n"
             "1. Na conversa do Claude, cole o prompt (Ctrl+V). Ele já está copiado.\n"
             "2. Arraste o arquivo claude_package.md (já selecionado na pasta) para a conversa.\n"
             "3. Opcional: arraste também algumas fotos de clique da pasta frames.\n"
@@ -576,6 +576,25 @@ class MainWindow(QMainWindow):
             if not ok:
                 raise
             return ObsRecorder(password=password or None)  # senha só em memória
+
+    def _discard_record(self) -> None:
+        """Interrompe a gravação e joga o vídeo fora: nada é importado nem processado."""
+        if QMessageBox.question(self, "Cancelar gravação", "Parar e descartar esta gravação? "
+                                "O vídeo e os cliques registrados serão apagados e nada será processado.") \
+                != QMessageBox.StandardButton.Yes:
+            return
+        assert self.session
+        if self.paused:
+            self._toggle_pause()
+        if self.capture:
+            self.capture.stop()
+        video = self.obs.stop() if self.obs else None
+        self.capture = self.obs = None
+        if video:
+            video.unlink(missing_ok=True)
+        (self.session.root / "raw" / INPUT_EVENTS_FILE).unlink(missing_ok=True)
+        logging.getLogger("replayflow").info("gravação cancelada e descartada; grave de novo quando quiser")
+        self._refresh()
 
     def _stop_record(self) -> None:
         assert self.session

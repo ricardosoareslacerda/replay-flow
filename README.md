@@ -47,7 +47,7 @@ git clone https://github.com/ricardosoareslacerda/replay-flow.git
 powershell -ExecutionPolicy Bypass -File replay-flow\scripts\build-portable.ps1 -Target F:\Pipeline-Capture -Model small
 ```
 
-Monta `F:\Pipeline-Capture` com Python 3.12 embeddable, dependências, FFmpeg, Tesseract (+ português e inglês), OBS Studio portátil já configurado (`scripts/setup_obs.py`), modelo Whisper e o lançador `ReplayFlow.bat`. Com placa NVIDIA, inclui também cuBLAS/cuDNN (~1,3 GB) e a transcrição roda na GPU, voltando sozinha para a CPU se a placa falhar. Sessões e preferências ficam dentro da própria pasta (`Sessions\`, `settings.ini`), então ela pode ser copiada para outro PC ou pendrive. Abra com duplo clique em `ReplayFlow.bat`; pela linha de comando, `ReplayFlow.bat process <pasta-da-sessão>`. Para atualizar, rode o script de novo.
+Monta `F:\Pipeline-Capture` com Python 3.12 embeddable, dependências, FFmpeg, Tesseract (+ português e inglês), OBS Studio portátil já configurado (`scripts/setup_obs.py`), modelo Whisper e o lançador `ReplayFlow.bat`. Com placa NVIDIA, inclui também cuBLAS/cuDNN (~1,3 GB) e a transcrição roda na GPU, voltando sozinha para a CPU se a placa falhar. Sessões e preferências ficam dentro da própria pasta (`Sessions\`, `settings.ini`), então ela pode ser copiada para outro PC ou pendrive. Abra com duplo clique em `ReplayFlow.exe` (executável único gerado por `scripts/make_launcher.py`; a preparação de PATH, Tesseract e modelos é feita em Python por `replayflow/app/environment.py`). Pela linha de comando: `python\python.exe -m replayflow process <pasta-da-atividade>`. Em Linux e macOS: `python3 -m replayflow`. Para atualizar, rode o script de novo.
 
 ### macOS
 
@@ -80,10 +80,9 @@ Já vem com `pip install -e ".[all]"`. Os modelos ficam no cache do Hugging Face
 A janela tem um bloco só, **Registrar uma atividade do seu dia a dia**, com um botão **Próximo: …** que sempre executa a próxima ação:
 
 1. **Nomear a atividade:** escreva com suas palavras o que vai mostrar (ex.: "baixar e arquivar as faturas do mês").
-2. **Gravar:** abre o OBS escondido, liga a captura de cliques/teclas e grava. **Pausar/Retomar** aparece durante a gravação; a pausa é descontada de vídeo e eventos.
+2. **Gravar:** abre o OBS escondido, liga a captura de cliques/teclas e grava. **Pausar/Retomar** e **Cancelar gravação** (descarta o vídeo sem processar) aparecem durante a gravação; a pausa é descontada de vídeo e eventos.
 3. **Processar:** começa sozinho ao parar a gravação. Enquanto processa, todos os comandos ficam bloqueados (só **Ferramentas › Cancelar processamento** continua disponível).
-4. **Revisar:** abre o `claude_package.md`.
-5. **Enviar ao Claude:** copia o prompt, seleciona o pacote no Explorer e abre o Claude no navegador. O envio é sempre manual.
+4. **Revisar e enviar ao Claude** (um clique): abre o `claude_package.md` para conferência, copia o prompt, seleciona o pacote no Explorer e abre o Claude no navegador. O envio é sempre manual.
 
 Menus:
 

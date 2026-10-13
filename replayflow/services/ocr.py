@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import shutil
 import sys
 import threading
@@ -14,6 +15,7 @@ MIN_LABEL_CONF = 70  # abaixo disso o "rótulo" costuma ser ícone lido como let
 _WINDOWS_DEFAULT = Path(r"C:\Program Files\Tesseract-OCR\tesseract.exe")
 
 
+@functools.lru_cache(maxsize=1)  # a checagem de versão roda o tesseract.exe: uma vez por processo basta
 def _pytesseract():  # type: ignore[no-untyped-def]
     try:
         import pytesseract

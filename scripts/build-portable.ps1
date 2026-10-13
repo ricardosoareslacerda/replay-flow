@@ -4,7 +4,7 @@
 
 .DESCRIPTION
   Resultado:
-    <Target>\ReplayFlow.bat      lançador (duplo clique)
+    <Target>\ReplayFlow.exe      executável único (duplo clique); ReplayFlow.bat fica só por compatibilidade
     <Target>\app\                código do ReplayFlow
     <Target>\python\             Python 3.12 embeddable + dependências
     <Target>\tools\ffmpeg\       ffmpeg.exe / ffprobe.exe
@@ -132,6 +132,10 @@ if "%~1"=="" (
 )
 '@
 
+Step "Gerando ReplayFlow.exe (executável único, sem .bat)"
+& $py (Join-Path $Repo "scripts\make_launcher.py") $Target
+if ($LASTEXITCODE) { throw "geração do ReplayFlow.exe falhou" }
+
 if ($Model) {
     Step "Baixando modelo Whisper '$Model' para $Target\models"
     & (Join-Path $Target "ReplayFlow.bat") download-model $Model
@@ -144,4 +148,4 @@ Step "Verificando"
 & (Join-Path $Target "tools\tesseract\tesseract.exe") --list-langs 2>&1 | Select-String "^por$"
 Remove-Item $dl -Recurse -Force
 Write-Host ""
-Write-Host "Pronto. Abra: $Target\ReplayFlow.bat" -ForegroundColor Green
+Write-Host "Pronto. Abra: $Target\ReplayFlow.exe" -ForegroundColor Green

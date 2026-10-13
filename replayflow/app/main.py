@@ -6,6 +6,7 @@ import argparse
 import sys
 from pathlib import Path
 
+from replayflow.app import environment
 from replayflow.core import network_guard, session_store
 from replayflow.core.errors import ReplayFlowError
 from replayflow.core.pipeline import Pipeline
@@ -14,6 +15,7 @@ from replayflow.services import transcriber
 
 
 def main(argv: list[str] | None = None) -> None:
+    environment.setup()  # pastas portáteis, PATH das ferramentas e consoles escondidos: antes de tudo
     config = AppConfig()
     parser = argparse.ArgumentParser(prog="replayflow")
     sub = parser.add_subparsers(dest="cmd")
