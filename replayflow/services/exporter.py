@@ -322,15 +322,30 @@ def build_prompt(session: Session) -> str:
     )
 
 
+def write_corrected_transcript(events: list[TimelineEvent], path: Path, title: str) -> None:
+    segments = [e for e in events if e.source == "transcript"]
+    if not any("original" in e.data for e in segments):
+        path.unlink(missing_ok=True)
+        return
+    lines = [f"# Transcrição corrigida: {title}", "",
+             "Nomes ouvidos errado foram trocados pela forma vista na tela (detalhes em export/verificacao.md).", ""]
+    lines += [f"**[{mmss(e.t)} - {mmss(e.data.get('end', e.t))}]** {e.data['text']}" for e in segments]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def export(session: Session, versions: dict[str, str]) -> list[Path]:
     layout = SessionLayout(session.root)
-    events = timeline_store.read(layout.timeline)
+    raw_events = timeline_store.read(layout.timeline)
+    # Passo final: apura a fala contra a tela, corrige nomes ouvidos errado e registra o que mudou.
+    check = verify.check(raw_events)
+    events = verify.apply(raw_events, check)
+    write_corrected_transcript(events, layout.transcript / "transcript_corrigido.md", session.name)
     steps = build_steps(events, session.duration_s or 0)
     index = layout.export / "frames_index.csv"
     package = layout.export / "claude_package.md"
     manifest = layout.export / "manifest.json"
     write_frames_index(steps, index)
-    check = verify.check(events)
     text = build_package(session, steps, events, check)
     verification = layout.export / "verificacao.md"
     vtext = verify.to_markdown(check, session.name)

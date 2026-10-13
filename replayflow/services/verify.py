@@ -18,7 +18,8 @@ from replayflow.services.transcriber import mmss
 
 WINDOW_S = 15.0          # tolerância entre a fala e a tela (a pessoa fala antes/depois de agir)
 SILENT_GAP_S = 20.0      # ações sem narração por mais que isso viram alerta
-FUZZY_CUTOFF = 0.75
+FUZZY_CUTOFF = 0.75       # a partir daqui, sugere correção
+APPLY_CUTOFF = 0.8        # a partir daqui, corrige sozinho (abaixo, só sugere para você decidir)
 _WORD_RE = re.compile(r"[A-Za-zÀ-ÿ0-9!]+")
 _STOPWORDS = set("""
 aqui agora ainda algo algum alguma assim antes apos aquele aquela aquilo bem cada coisa como com contra
@@ -51,6 +52,13 @@ class Mention:
     status: str                 # "confirmado", "visto em outro momento", "provável erro", "sem evidência"
     seen_at: float | None = None
     suggestion: str = ""
+    where: str = ""             # onde a forma correta apareceu: janela, clique, tela (OCR), digitado/colado
+    similarity: float = 0.0
+    occurrences: int = 0        # quantas vezes a palavra foi trocada na transcrição
+
+    @property
+    def applied(self) -> bool:
+        return self.status == "provável erro" and self.similarity >= APPLY_CUTOFF
 
 
 @dataclass
@@ -74,22 +82,23 @@ class Report:
         return [m for m in self.mentions if m.status == status]
 
 
-def _evidence(events: list[TimelineEvent]) -> list[tuple[float, str, str]]:
-    """(tempo, termo normalizado, termo como aparece na tela)."""
-    out: list[tuple[float, str, str]] = []
+def _evidence(events: list[TimelineEvent]) -> list[tuple[float, str, str, str]]:
+    """(tempo, termo normalizado, termo como aparece na tela, onde apareceu)."""
+    out: list[tuple[float, str, str, str]] = []
 
-    def add(t: float, text: str) -> None:
-        out.extend((t, _norm(w), w) for w in _content_words(text))
+    def add(t: float, text: str, where: str) -> None:
+        out.extend((t, _norm(w), w, where) for w in _content_words(text))
 
+    for e in events:  # fontes mais confiáveis primeiro: o rótulo "visto" vem da melhor fonte
+        if e.source == "window":
+            add(e.t, e.data.get("title", ""), "título da janela")
+        elif e.source == "key":
+            add(e.t, e.data.get("text", "") + " " + e.data.get("pasted", ""), "texto digitado/colado")
+        elif e.source == "frame":
+            add(e.t, e.data.get("target", "") + " " + e.data.get("near", ""), "rótulo/área do clique")
     for e in events:
         if e.source == "ocr":
-            add(e.t, e.data.get("text", ""))
-        elif e.source == "frame":
-            add(e.t, e.data.get("target", "") + " " + e.data.get("near", ""))
-        elif e.source == "window":
-            add(e.t, e.data.get("title", ""))
-        elif e.source == "key":
-            add(e.t, e.data.get("text", "") + " " + e.data.get("pasted", ""))
+            add(e.t, e.data.get("text", ""), "texto lido da tela")
     return out
 
 
@@ -110,7 +119,7 @@ def _spoken(events: list[TimelineEvent]) -> list[tuple[float, str]]:
 def check(events: list[TimelineEvent]) -> Report:
     evidence = _evidence(events)
     vocab: dict[str, str] = {}
-    for _, n, raw in evidence:
+    for _, n, raw, _w in evidence:
         vocab.setdefault(n, raw)
     report = Report()
     seen_terms: set[str] = set()
@@ -119,11 +128,11 @@ def check(events: list[TimelineEvent]) -> Report:
         if not n or n in seen_terms:  # cada termo é avaliado na 1ª vez em que é dito
             continue
         seen_terms.add(n)
-        near = [et for et, en, _ in evidence if _same(n, en) and abs(et - t) <= WINDOW_S]
+        near = [et for et, en, _, _w in evidence if _same(n, en) and abs(et - t) <= WINDOW_S]
         if near:
             report.mentions.append(Mention(t, word, "confirmado", min(near, key=lambda et: abs(et - t))))
             continue
-        anywhere = [et for et, en, _ in evidence if _same(n, en)]
+        anywhere = [et for et, en, _, _w in evidence if _same(n, en)]
         if anywhere:
             report.mentions.append(Mention(t, word, "visto em outro momento", min(anywhere, key=lambda et: abs(et - t))))
             continue
@@ -131,8 +140,9 @@ def check(events: list[TimelineEvent]) -> Report:
         # Só sugere correção para nomes (maiúscula na fala ou na tela): palavras comuns parecidas
         # ("final" ~ "fina") geram falso alarme.
         if close and len(n) >= 5 and len(close[0]) >= 5 and (word[:1].isupper() or vocab[close[0]][:1].isupper()):
-            when = next(et for et, en, _ in evidence if en == close[0])
-            report.mentions.append(Mention(t, word, "provável erro", when, vocab[close[0]]))
+            when, where = next((et, w) for et, en, _, w in evidence if en == close[0])
+            ratio = difflib.SequenceMatcher(None, n, close[0]).ratio()
+            report.mentions.append(Mention(t, word, "provável erro", when, vocab[close[0]], where, round(ratio, 2)))
         else:
             report.mentions.append(Mention(t, word, "sem evidência"))
     report.silent_gaps = _silent_gaps(events)
@@ -162,6 +172,36 @@ def _silent_gaps(events: list[TimelineEvent]) -> list[tuple[float, float, int]]:
     return gaps
 
 
+def apply(events: list[TimelineEvent], report: Report) -> list[TimelineEvent]:
+    """Aplica as correções de alta confiança na transcrição (cópia; o transcript.json original fica intacto)."""
+    fixes = {m.said: m for m in report.mentions if m.applied}
+    if not fixes:
+        return events
+    pattern = re.compile(r"(?<![\wÀ-ÿ])(" + "|".join(re.escape(w) for w in sorted(fixes, key=len, reverse=True))
+                         + r")(?![\wÀ-ÿ])")
+
+    def fix(text: str) -> str:
+        def sub(m: re.Match[str]) -> str:
+            fixes[m.group(1)].occurrences += 1
+            return fixes[m.group(1)].suggestion
+        return pattern.sub(sub, text)
+
+    out = []
+    for e in events:
+        if e.source == "transcript":
+            words = [[w[0], w[1], pattern.sub(lambda m: fixes[m.group(1)].suggestion, w[2])]
+                     for w in e.data.get("words") or []]
+            e = e.model_copy(update={"data": {**e.data, "text": fix(e.data["text"]), "words": words,
+                                              "original": e.data["text"]}})
+        out.append(e)
+    return out
+
+
+def _fix_line(m: Mention) -> str:
+    return (f"[{mmss(m.t)}] \"{m.said}\" → \"{m.suggestion}\" — visto em {m.where} às {mmss(m.seen_at or 0)}, "
+            f"{m.similarity:.0%} parecido")
+
+
 def summary_lines(report: Report) -> list[str]:
     """Resumo para o topo do claude_package.md."""
     if not report.checked and not report.silent_gaps:
@@ -169,29 +209,50 @@ def summary_lines(report: Report) -> list[str]:
     lines = []
     if report.score is not None:
         lines.append(f"- **Concordância fala × tela:** {report.score:.0%} dos {report.checked} termos ditos aparecem na tela.")
-    errors = report.by_status("provável erro")
-    if errors:
-        lines.append("- **Prováveis erros de transcrição** (use a forma vista na tela):")
-        lines += [f"  - [{mmss(m.t)}] dito \"{m.said}\" → na tela \"{m.suggestion}\" ({mmss(m.seen_at or 0)})" for m in errors]
+    applied = [m for m in report.mentions if m.applied]
+    pending = [m for m in report.by_status("provável erro") if not m.applied]
+    if applied:
+        lines.append("- **Correções já aplicadas na transcrição deste pacote** (a forma da tela substituiu a ouvida):")
+        lines += [f"  - {_fix_line(m)}" for m in applied]
+    if pending:
+        lines.append("- **Possíveis erros não corrigidos** (semelhança baixa; confirme antes de usar):")
+        lines += [f"  - {_fix_line(m)}" for m in pending]
     for start, end, n in report.silent_gaps:
         lines.append(f"- **Sem narração** de {mmss(start)} a {mmss(end)} ({n} ações): o porquê dessas ações não foi explicado.")
     return lines
 
 
 def to_markdown(report: Report, title: str) -> str:
+    applied = [m for m in report.mentions if m.applied]
+    pending = [m for m in report.by_status("provável erro") if not m.applied]
     out = [f"# Verificação vídeo × transcrição: {title}", "",
-           "Confronta cada termo dito com o que apareceu na tela (OCR, rótulos de clique, janelas, texto digitado "
-           f"ou colado), numa janela de ±{WINDOW_S:.0f}s.", "", *summary_lines(report), ""]
+           "1. **Apuração:** cada termo dito foi procurado na tela (títulos de janela, rótulos de clique, texto "
+           f"digitado/colado e texto lido da tela) até {WINDOW_S:.0f}s antes ou depois.",
+           f"2. **Correção:** nomes ouvidos errado e que aparecem na tela com {APPLY_CUTOFF:.0%}+ de semelhança foram "
+           "corrigidos na transcrição do pacote. O original continua em `transcript/transcript.md`; a versão "
+           "corrigida está em `transcript/transcript_corrigido.md`.",
+           "3. **Resumo:** abaixo, cada correção com a evidência, para você conferir se faz sentido.", "",
+           f"## Correções aplicadas ({len(applied)})", ""]
+    if applied:
+        out += ["| Quando | Ouvido | Corrigido para | Evidência na tela | Semelhança | Trocas |", "|---|---|---|---|---|---|"]
+        out += [f"| {mmss(m.t)} | {m.said} | {m.suggestion} | {m.where} às {mmss(m.seen_at or 0)} | "
+                f"{m.similarity:.0%} | {m.occurrences} |" for m in applied]
+    else:
+        out.append("_Nenhuma: os nomes ditos já batiam com a tela._")
+    out += ["", f"## Possíveis erros NÃO corrigidos ({len(pending)})", ""]
+    out += [f"- {_fix_line(m)}" for m in pending] or ["_Nenhum._"]
+    out += ["", "## Pontos de atenção", ""]
+    out += [f"- Sem narração de {mmss(s)} a {mmss(e)} ({n} ações)." for s, e, n in report.silent_gaps] or ["_Nenhum._"]
+    if report.score is not None:
+        out.append(f"- Concordância fala × tela: {report.score:.0%} dos {report.checked} termos ditos.")
     sections = (("confirmado", "Confirmados na tela no mesmo momento"),
                 ("visto em outro momento", "Vistos na tela, mas em outro momento"),
-                ("provável erro", "Prováveis erros de transcrição"),
-                ("sem evidência", "Sem evidência na tela (falas sobre intenção, regras ou coisas fora da tela)"))
+                ("sem evidência", "Sem evidência na tela (intenção, regras ou coisas fora da tela)"))
+    out += ["", "## Apuração completa", ""]
     for status, heading in sections:
         items = report.by_status(status)
-        out += [f"## {heading} ({len(items)})", ""]
-        for m in items:
-            seen = f" · tela em {mmss(m.seen_at)}" if m.seen_at is not None else ""
-            fix = f" → \"{m.suggestion}\"" if m.suggestion else ""
-            out.append(f"- [{mmss(m.t)}] {m.said}{fix}{seen}")
+        out += [f"### {heading} ({len(items)})", ""]
+        out += [f"- [{mmss(m.t)}] {m.said}" + (f" · tela em {mmss(m.seen_at)}" if m.seen_at is not None else "")
+                for m in items]
         out.append("")
     return "\n".join(out)
