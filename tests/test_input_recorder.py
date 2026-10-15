@@ -106,3 +106,22 @@ def test_numpad_keys_become_digits() -> None:
     assert InputCapture._key_name(SimpleNamespace(char=None, vk=0x6E)) == ("", ",")
     assert InputCapture._key_name(SimpleNamespace(char="a", vk=0x41)) == ("", "a")
     assert InputCapture._key_name(SimpleNamespace(char=None, vk=None, name="enter")) == ("enter", None)
+
+
+def test_pen_strokes_are_logged_and_clicks_ignored_while_drawing(tmp_path, monkeypatch) -> None:
+    import json
+
+    from replayflow.services import input_capture as ic
+
+    clock = [10.0]
+    monkeypatch.setattr(ic.time, "monotonic", lambda: clock[0])
+    cap = ic.InputCapture(tmp_path / "e.jsonl", mouse=False, keys=False)
+    cap.recorder._window_title = lambda: None
+    clock[0] = 12.0
+    cap.annotating = True
+    cap._click(5, 5, "left", True)               # traço da caneta, não é clique
+    cap.record_annotation([(100, 100), (150, 120), (300, 200)])
+    cap.annotating = False
+    cap.stop()
+    events = [json.loads(line) for line in (tmp_path / "e.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert [(e["kind"], e["data"]["start"], e["data"]["end"]) for e in events] == [("annotation", [100, 100], [300, 200])]

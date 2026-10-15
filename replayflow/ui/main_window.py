@@ -8,6 +8,7 @@ conforme o passo (Iniciar gravação → Parar e processar → Revisar e enviar 
 from __future__ import annotations
 
 import logging
+import shutil
 import subprocess
 import sys
 import threading
@@ -15,7 +16,7 @@ import time
 from pathlib import Path
 
 from PyQt6.QtCore import QObject, QSettings, Qt, QThread, QTimer, QUrl, pyqtSignal
-from PyQt6.QtGui import QDesktopServices, QGuiApplication
+from PyQt6.QtGui import QDesktopServices, QGuiApplication, QPixmap
 from PyQt6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog, QFormLayout, QFrame, QGroupBox,
     QHBoxLayout, QInputDialog, QLabel, QLineEdit, QMainWindow, QMessageBox, QPlainTextEdit, QPushButton, QSpinBox,
@@ -32,7 +33,8 @@ from replayflow.services import audio_devices, capture_target, exporter, ffmpeg,
 from replayflow.services.input_capture import InputCapture
 from replayflow.ui import theme
 from replayflow.ui.widgets import (
-    AreaSelector, MouseHighlight, Preview, RegionOutline, Segmented, Switch, Timeline, WindowPicker,
+    AnnotationLayer, AreaSelector, MouseHighlight, Preview, RegionOutline, Segmented, Switch, Timeline, TimerBadge,
+    WindowPicker,
 )
 
 LANGUAGES = {"pt-BR": "pt", "en": "en", "es": "es"}
@@ -80,9 +82,10 @@ class Worker(QObject):
 
 
 class ClickRelay(QObject):
-    """Leva o clique (thread do pynput) até o destaque do mouse (thread da interface)."""
+    """Leva eventos das threads do pynput (clique, tecla F8) até a thread da interface."""
 
     clicked = pyqtSignal()
+    pen_key = pyqtSignal()
 
 
 class MainWindow(QMainWindow):
@@ -109,6 +112,12 @@ class MainWindow(QMainWindow):
         self.highlight = MouseHighlight()
         self.click_relay = ClickRelay()
         self.click_relay.clicked.connect(self.highlight.clicked)
+        self.badge = TimerBadge()
+        self.pen = AnnotationLayer()
+        self.pen.stroke_done.connect(self._pen_stroke)
+        self.click_relay.pen_key.connect(self._toggle_pen)
+        self.pen_listener = None
+        self.camera = None  # câmera do Qt para a prévia antes de gravar (o OBS assume durante a gravação)
         self._build()
         self._wire_logging()
         self._apply_private_mode()
@@ -117,6 +126,8 @@ class MainWindow(QMainWindow):
         self.preview_timer = QTimer(self)
         self.preview_timer.timeout.connect(self._update_preview)
         self.preview_timer.start(1500)
+        self.cam_timer = QTimer(self)
+        self.cam_timer.timeout.connect(self._poll_obs_webcam)
         self._refresh_area()
 
     # ---------- layout ----------
@@ -145,8 +156,13 @@ class MainWindow(QMainWindow):
         name_box.addWidget(name_label)
         name_box.addWidget(self.name)
         self.timeline = Timeline()
+        self.timer_label = QLabel()
+        self.timer_label.setStyleSheet(f"font-size:26px;font-weight:700;color:#E0533D;padding-left:8px;")
+        self.timer_label.setAccessibleName("Tempo de gravação")
+        self.timer_label.setVisible(False)
         top.addLayout(name_box)
         top.addWidget(self.timeline, stretch=1)
+        top.addWidget(self.timer_label)
         root.addLayout(top)
 
         body = QHBoxLayout()
@@ -258,6 +274,9 @@ class MainWindow(QMainWindow):
             (self.sw_cam, "cam_on", "Webcam no canto",
              lambda on: "Seu rosto no canto inferior direito" if on else "Desligada"),
         ]
+        self.sw_pen = Switch(self.settings.value("pen_on", False, type=bool))
+        rows.append((self.sw_pen, "pen_on", "Caneta de apontamento (F8)",
+                     lambda on: "Na gravação, F8 liga/desliga a caneta" if on else "Desligada"))
         self.source_rows = []
         for sw, key, title, sub in rows:
             row, label = self._row(title, sub(sw.isChecked()), sw)
@@ -265,6 +284,17 @@ class MainWindow(QMainWindow):
                                                                     self._update_preview()))
             lay.addWidget(row)
             self.source_rows.append(sw)
+        self.chk_pen_log = QCheckBox("Registrar os desenhos da caneta no pacote para a IA",
+                                     checked=self.settings.value("pen_log", True, type=bool))
+        self.chk_pen_log.toggled.connect(lambda on: self.settings.setValue("pen_log", on))
+        self.chk_pen_log.setContentsMargins(16, 0, 16, 0)
+        pen_log_box = QHBoxLayout()
+        pen_log_box.setContentsMargins(16, 6, 16, 0)
+        pen_log_box.addWidget(self.chk_pen_log)
+        lay.addLayout(pen_log_box)
+        self.sw_pen.toggled.connect(self.chk_pen_log.setEnabled)
+        self.chk_pen_log.setEnabled(self.sw_pen.isChecked())
+        self.sw_cam.toggled.connect(lambda _: self._sync_camera())
         lay.addStretch(1)
         self.live_counts = QLabel()
         self.live_counts.setObjectName("Sub")
@@ -335,7 +365,11 @@ class MainWindow(QMainWindow):
         self.btn_watch.clicked.connect(self._play_video)
         self.btn_folder = QPushButton("Abrir pasta")
         self.btn_folder.clicked.connect(self._open_folder)
-        for b in (self.btn_pause, self.btn_discard, self.btn_watch, self.btn_folder):
+        self.btn_delete = QPushButton("Excluir…")
+        self.btn_delete.setObjectName("Danger")
+        self.btn_delete.setToolTip("Apagar o vídeo ou a atividade inteira")
+        self.btn_delete.clicked.connect(self._delete_dialog)
+        for b in (self.btn_pause, self.btn_discard, self.btn_watch, self.btn_folder, self.btn_delete):
             secondary.addWidget(b)
         inner.addLayout(secondary)
         lay.addLayout(inner, stretch=1)
@@ -378,6 +412,7 @@ class MainWindow(QMainWindow):
         m.addSeparator()
         self.act_play = m.addAction("Assistir à gravação", self._play_video)
         self.act_folder = m.addAction("Abrir pasta da atividade", self._open_folder)
+        self.act_delete = m.addAction("Excluir gravação ou atividade…", self._delete_dialog)
         m.addSeparator()
         m.addAction("Sair", self.close)
         t = bar.addMenu("&Ferramentas")
@@ -533,6 +568,49 @@ class MainWindow(QMainWindow):
         self._refresh()
         self._update_preview()
 
+    def _sync_camera(self) -> None:
+        """Liga a câmera do Qt só para a prévia, quando a webcam está ligada e não há gravação."""
+        recording = self.capture is not None or self.obs is not None
+        want = self.sw_cam.isChecked() and not recording and self.stack.currentWidget() is self.preview
+        if want and self.camera is None:
+            try:
+                from PyQt6.QtMultimedia import QCamera, QMediaCaptureSession, QMediaDevices, QVideoSink
+
+                if not QMediaDevices.videoInputs():
+                    return
+                self.camera = QCamera(QMediaDevices.defaultVideoInput())
+                self.cam_session = QMediaCaptureSession()
+                self.cam_sink = QVideoSink()
+                self.cam_session.setCamera(self.camera)
+                self.cam_session.setVideoSink(self.cam_sink)
+                self.cam_sink.videoFrameChanged.connect(self._camera_frame)
+                self.camera.start()
+            except Exception as e:  # sem câmera ou sem suporte: a prévia mostra só o círculo
+                logging.getLogger("replayflow").warning(f"prévia da webcam indisponível: {e}")
+                self.camera = None
+        elif not want and self.camera is not None:
+            self.camera.stop()
+            self.camera = None
+            self.preview.webcam_frame = None
+        self.preview.update()
+
+    def _camera_frame(self, frame) -> None:  # type: ignore[no-untyped-def]
+        image = frame.toImage()
+        if not image.isNull():
+            self.preview.webcam_frame = QPixmap.fromImage(image.scaledToWidth(320))
+            self.preview.update()
+
+    def _poll_obs_webcam(self) -> None:
+        """Durante a gravação a câmera é do OBS: a prévia mostra o que ele está gravando."""
+        if self.obs is None or not self.sw_cam.isChecked():
+            return
+        data = self.obs.webcam_frame()
+        if data:
+            pix = QPixmap()
+            if pix.loadFromData(data):
+                self.preview.webcam_frame = pix
+                self.preview.update()
+
     def _update_preview(self) -> None:
         recording = self.capture is not None or self.obs is not None
         p = self.preview
@@ -608,10 +686,12 @@ class MainWindow(QMainWindow):
         self.name.setEnabled(idle and not has_session)
         for w in (self.area_mode, self.monitor_combo, self.btn_pick, *self.source_rows, self.quality, self.out_format):
             w.setEnabled(idle and not has_video)
+        self.chk_pen_log.setEnabled(idle and not has_video and self.sw_pen.isChecked())
         for a in (self.act_new, self.act_open, self.act_import, self.act_audio, self.act_options, self.act_base):
             a.setEnabled(idle)
         self.act_play.setEnabled(idle and has_video)
         self.act_folder.setEnabled(idle and has_session)
+        self.act_delete.setEnabled(idle and has_video)
         self.act_process.setEnabled(idle and has_video)
         self.act_package.setEnabled(idle and has_video)
         self.act_prompt.setEnabled(idle and has_session)
@@ -622,9 +702,12 @@ class MainWindow(QMainWindow):
         done = self._done() and idle
         self.btn_watch.setVisible(done)
         self.btn_folder.setVisible(done)
+        self.btn_delete.setVisible(done)
+        self.timer_label.setVisible(recording)
         self.send_row.setVisible(done and not self.sent)
         self.output_row.setVisible(not done and not busy)
         self.stack.setCurrentWidget(self.summary if done or busy else self.preview)
+        self._sync_camera()
         if busy and self.session:
             names = "  ".join(f"{'✓' if st.status in (StageStatus.DONE, StageStatus.SKIPPED) else '…'} {STAGE_NAMES[k]}"
                               for k, st in self.session.stages.items())
@@ -833,6 +916,9 @@ class MainWindow(QMainWindow):
             self._error("Escolha a área de captura antes de gravar.")
             return self._pick_area()
         monitor = capture_target.monitor_of(region, capture_target.monitors()) or self._monitor()
+        if self.camera is not None:  # a webcam é de um programa por vez: o OBS precisa dela agora
+            self.camera.stop()
+            self.camera = None
         try:
             self.obs = self._connect_obs()
         except ReplayFlowError as e:
@@ -866,6 +952,13 @@ class MainWindow(QMainWindow):
                 self.outline.show_for(region)
             if self.sw_mouse.isChecked():
                 self.highlight.start()
+            if self.sw_pen.isChecked():
+                self.pen.attach(region)
+                self._start_pen_hotkey()
+            if self.area_mode.index() != 0:
+                self.badge.show_at(region)
+            if self.sw_cam.isChecked() and self.obs:
+                self.cam_timer.start(200)
             self.rec_t0, self.rec_paused_total, self.paused = time.monotonic(), 0.0, False
             self.clock.start(500)
             self._tick()
@@ -887,7 +980,10 @@ class MainWindow(QMainWindow):
     def _tick(self) -> None:
         paused = self.rec_paused_total + (time.monotonic() - self.rec_paused_at if self.paused else 0.0)
         elapsed = int(time.monotonic() - self.rec_t0 - paused)
-        self.preview.timer_text = f"{'pausado ' if self.paused else ''}{elapsed // 60:02d}:{elapsed % 60:02d}"
+        clock = f"{elapsed // 60:02d}:{elapsed % 60:02d}"
+        self.preview.timer_text = f"{'pausado ' if self.paused else ''}{clock}"
+        self.timer_label.setText(("⏸ " if self.paused else "⏺ ") + clock)
+        self.badge.set_time(clock, self.paused)
         if self.capture:
             c = self.capture.counts
             self.live_counts.setText(f"Registrado até agora: {c.get('click', 0)} cliques · {c.get('text', 0)} "
@@ -948,9 +1044,75 @@ class MainWindow(QMainWindow):
         self.capture = self.obs = None
         self.outline.hide()
         self.highlight.stop()
+        self.pen.stop()
+        self._stop_pen_hotkey()
+        self.badge.hide()
+        self.cam_timer.stop()
+        self.preview.webcam_frame = None
+        self.timer_label.clear()
         self.clock.stop()
         self.preview.timer_text = ""
         return video
+
+    # ---------- caneta de apontamento ----------
+
+    def _start_pen_hotkey(self) -> None:
+        """F8 liga/desliga a caneta de qualquer programa (o ReplayFlow fica em segundo plano na gravação)."""
+        try:
+            from pynput import keyboard
+        except ImportError:
+            return
+        relay = self.click_relay
+
+        def press(key) -> None:  # type: ignore[no-untyped-def]
+            if key == keyboard.Key.f8:
+                relay.pen_key.emit()
+
+        self.pen_listener = keyboard.Listener(on_press=press)
+        self.pen_listener.start()
+        logging.getLogger("replayflow").info("caneta pronta: F8 liga/desliga, botão direito limpa")
+
+    def _stop_pen_hotkey(self) -> None:
+        if self.pen_listener is not None:
+            self.pen_listener.stop()
+            self.pen_listener = None
+
+    def _toggle_pen(self) -> None:
+        if self.obs is None and self.capture is None:
+            return
+        on = not self.pen.drawing
+        self.pen.set_drawing(on)
+        if self.capture:
+            self.capture.annotating = on  # traços não são cliques em programas
+
+    def _pen_stroke(self, points: list[tuple[int, int]]) -> None:
+        if self.capture and self.chk_pen_log.isChecked():
+            self.capture.record_annotation(points)
+
+    # ---------- excluir ----------
+
+    def _delete_dialog(self) -> None:
+        """Depois de processar: apagar só o vídeo (mantém pacote e fotos) ou a atividade inteira."""
+        if self.session is None or self.thread is not None:
+            return
+        box = QMessageBox(QMessageBox.Icon.Warning, "Excluir", "O que você quer apagar? Não dá para desfazer.",
+                          parent=self)
+        only_video = box.addButton("Só o vídeo (mantém o pacote)", QMessageBox.ButtonRole.DestructiveRole)
+        everything = box.addButton("A atividade inteira", QMessageBox.ButtonRole.DestructiveRole)
+        box.addButton(QMessageBox.StandardButton.Cancel)
+        box.exec()
+        root = self.session.root
+        if box.clickedButton() is only_video:
+            for f in [*(root / "raw").glob("*.mkv"), *(root / "raw").glob("*.mp4"), *(root / "export").glob("video.*")]:
+                f.unlink(missing_ok=True)
+            (root / "audio" / "audio.wav").unlink(missing_ok=True)
+            logging.getLogger("replayflow").info("vídeo apagado; pacote, fotos e transcrição mantidos")
+            self.btn_watch.setEnabled(False)
+        elif box.clickedButton() is everything:
+            name = self.session.name
+            self._start_over()
+            shutil.rmtree(root, ignore_errors=True)
+            logging.getLogger("replayflow").info(f"atividade apagada: {name}")
 
     def _discard_record(self) -> None:
         """Interrompe a gravação e joga o vídeo fora: nada é importado nem processado."""
@@ -974,7 +1136,10 @@ class MainWindow(QMainWindow):
         if video:
             self.session = session_store.import_video(self.session, video)
             self.sent = False
-            logging.getLogger("replayflow").info(f"gravação finalizada e importada: {video}")
+            logging.getLogger("replayflow").info(f"gravação finalizada e importada: {video.name}")
+            home = portable_home()
+            if home and video.parent == home / "Gravacoes":
+                video.unlink(missing_ok=True)  # o original do OBS já foi copiado para a atividade
             self._check_mic(self.session.root / "raw" / self.session.video_file)  # type: ignore[operator]
             if self.chk_auto.isChecked():
                 self.auto_flow = True
@@ -1074,6 +1239,10 @@ class MainWindow(QMainWindow):
             self.thread.wait(5000)
         self.outline.close()
         self.highlight.close()
+        self.pen.close()
+        self.badge.close()
+        if self.camera is not None:
+            self.camera.stop()
         if self.obs_proc:  # fecha o OBS só se foi o ReplayFlow que o abriu
             from replayflow.services.obs import stop_portable_obs
 

@@ -164,6 +164,7 @@ class InputCapture:
         self._paused_at: float | None = None
         self._paused_total = 0.0
         self.counts: dict[str, int] = {}
+        self.annotating = False  # caneta ligada: os cliques desenham na tela, não são cliques de verdade
         self.recorder = InputRecorder(self._write, secret_key)
         self._listeners = []
         if keys:
@@ -226,11 +227,22 @@ class InputCapture:
 
     def _click(self, x: int, y: int, button: object, pressed: bool) -> None:
         if pressed:
+            if self.annotating:
+                return
             if self._on_click and self._paused_at is None:
                 self._on_click()
             with self._lock:
                 if self._paused_at is None:
                     self.recorder.on_click(self._now(), x, y, getattr(button, "name", str(button)))
+
+    def record_annotation(self, points: list[tuple[int, int]]) -> None:
+        """Registra um traço da caneta (início, fim e caixa) no mesmo relógio dos cliques."""
+        xs, ys = [p[0] for p in points], [p[1] for p in points]
+        with self._lock:
+            if self._paused_at is None:
+                self._write(TimelineEvent(t=self._now(), source="mouse", kind="annotation", data={
+                    "start": list(points[0]), "end": list(points[-1]), "box": [min(xs), min(ys), max(xs), max(ys)],
+                    "points": len(points)}))
 
     def start(self) -> None:
         self._t0 = time.monotonic()

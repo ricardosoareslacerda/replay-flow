@@ -196,6 +196,15 @@ class ObsRecorder:
             "boundsAlignment": 0, "alignment": (8 if bottom else 4) | (2 if right else 1),
             "positionX": float(w - margin if right else margin), "positionY": float(h - margin if bottom else margin)})
 
+    def webcam_frame(self) -> bytes | None:
+        """Imagem atual da webcam que está sendo gravada (JPEG), para a prévia ao vivo na janela."""
+        try:
+            data = self._client.get_source_screenshot(WEBCAM_SOURCE, "jpg", 320, 240, 70).image_data
+        except Exception:
+            return None
+        import base64
+
+        return base64.b64decode(data.split(",", 1)[-1]) if data else None
     def set_audio(self, mic_on: bool, speaker_on: bool) -> None:
         """Interruptores Microfone e Som do computador: mudo no OBS (a trilha continua existindo)."""
         special = self._client.get_special_inputs()

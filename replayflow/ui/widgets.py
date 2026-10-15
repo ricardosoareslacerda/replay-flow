@@ -6,7 +6,10 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from PyQt6.QtCore import QPoint, QPropertyAnimation, QRect, QRectF, QSize, Qt, QTimer, pyqtProperty, pyqtSignal
-from PyQt6.QtGui import QColor, QCursor, QFont, QFontMetrics, QGuiApplication, QKeyEvent, QMouseEvent, QPainter, QPen, QPixmap
+from PyQt6.QtGui import (
+    QColor, QCursor, QFont, QFontMetrics, QGuiApplication, QKeyEvent, QMouseEvent, QPainter, QPainterPath, QPen,
+    QPixmap,
+)
 from PyQt6.QtWidgets import QAbstractButton, QButtonGroup, QHBoxLayout, QPushButton, QWidget
 
 from replayflow.services import capture_target
@@ -175,6 +178,7 @@ class Preview(QWidget):
         self.pixmap: QPixmap | None = None
         self.mouse = self.webcam = self.recording = False
         self.webcam_corner = "bottom-right"
+        self.webcam_frame: QPixmap | None = None  # imagem ao vivo da câmera (Qt antes de gravar, OBS durante)
         self.timer_text = ""
         self.setAccessibleName("Prévia do vídeo")
 
@@ -218,11 +222,25 @@ class Preview(QWidget):
             right, bottom = self.webcam_corner.endswith("right"), self.webcam_corner.startswith("bottom")
             cx = target.right() - r - 10 if right else target.left() + r + 10
             cy = target.bottom() - r - 10 if bottom else target.top() + r + 10
+            circle = QRectF(cx - r, cy - r, 2 * r, 2 * r)
+            frame = self.webcam_frame
+            if frame is not None and not frame.isNull():
+                clip = QPainterPath()
+                clip.addEllipse(circle)
+                p.save()
+                p.setClipPath(clip)
+                s = max(circle.width() / frame.width(), circle.height() / frame.height())
+                w, h = frame.width() * s, frame.height() * s
+                p.drawPixmap(QRectF(cx - w / 2, cy - h / 2, w, h), frame, QRectF(frame.rect()))
+                p.restore()
+            else:
+                p.setBrush(QColor("#2B3A44"))
+                p.drawEllipse(circle)
+                p.setPen(QColor(theme.TEXT_SOFT))
+                p.drawText(circle, int(Qt.AlignmentFlag.AlignCenter), "câmera…")
+            p.setBrush(Qt.BrushStyle.NoBrush)
             p.setPen(QPen(QColor(theme.TEAL_LIGHT), 3))
-            p.setBrush(QColor("#2B3A44"))
-            p.drawEllipse(QRectF(cx - r, cy - r, 2 * r, 2 * r))
-            p.setPen(QColor(theme.TEXT_SOFT))
-            p.drawText(QRectF(cx - r, cy - r, 2 * r, 2 * r), int(Qt.AlignmentFlag.AlignCenter), "você")
+            p.drawEllipse(circle)
         if self.timer_text:
             font = QFont(self.font())
             font.setPointSize(20)
@@ -529,3 +547,153 @@ class MouseHighlight(_PassThrough):
             p.setPen(QPen(QColor(224, 60, 50, int(200 * (1 - self._pulse))), 3))
             r = 17 + 24 * self._pulse
             p.drawEllipse(c, r, r)
+
+
+class AnnotationLayer(QWidget):
+    """Caneta de apontamento por cima do monitor gravado (como em apresentações).
+
+    Com a caneta ligada (F8), o mouse risca a tela do ponto A ao ponto B e os traços aparecem no vídeo;
+    os cliques não chegam aos programas embaixo. Desligando (F8 de novo), os traços somem em ~1 s e o
+    mouse volta a funcionar normalmente. Botão direito limpa os traços.
+    """
+
+    stroke_done = pyqtSignal(object)  # lista de pontos físicos [(x, y), ...] de um traço
+
+    COLOR = QColor(224, 60, 50)
+
+    def __init__(self) -> None:
+        super().__init__(None, Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint
+                         | Qt.WindowType.Tool | Qt.WindowType.WindowTransparentForInput)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+        self.strokes: list[list[QPoint]] = []
+        self.current: list[QPoint] | None = None
+        self.drawing = False
+        self.alpha = 1.0
+        self.screen_ = QGuiApplication.primaryScreen()
+        self.fade = QTimer(self)
+        self.fade.timeout.connect(self._fade_step)
+
+    def attach(self, region: Region) -> None:
+        """Cobre o monitor da área gravada."""
+        found = to_logical(region)
+        if found:
+            self.screen_ = found[1]
+        self.setGeometry(self.screen_.geometry())
+
+    def set_drawing(self, on: bool) -> None:
+        self.drawing = on
+        self.setWindowFlag(Qt.WindowType.WindowTransparentForInput, not on)
+        if on:
+            self.fade.stop()
+            self.alpha = 1.0
+            self.setCursor(Qt.CursorShape.CrossCursor)
+        else:
+            self.current = None
+            self.fade.start(40)
+        self.show()
+        if on:
+            self.raise_()
+        self.update()
+
+    def clear(self) -> None:
+        self.strokes.clear()
+        self.current = None
+        self.update()
+
+    def stop(self) -> None:
+        self.drawing = False
+        self.fade.stop()
+        self.clear()
+        self.hide()
+
+    def _fade_step(self) -> None:
+        self.alpha -= 0.04
+        if self.alpha <= 0:
+            self.fade.stop()
+            self.clear()
+            self.alpha = 1.0
+            if not self.drawing:
+                self.hide()
+        self.update()
+
+    def mousePressEvent(self, e: QMouseEvent) -> None:
+        if e.button() == Qt.MouseButton.RightButton:
+            return self.clear()
+        self.current = [e.position().toPoint()]
+        self.strokes.append(self.current)
+
+    def mouseMoveEvent(self, e: QMouseEvent) -> None:
+        if self.current is not None:
+            self.current.append(e.position().toPoint())
+            self.update()
+
+    def mouseReleaseEvent(self, _e: QMouseEvent) -> None:
+        if self.current and len(self.current) > 1:
+            origin = self.geometry().topLeft()
+            phys = [to_physical(QRect(pt + origin, QSize(1, 1)), self.screen_)[:2] for pt in self.current]
+            self.stroke_done.emit(phys)
+        self.current = None
+
+    def paintEvent(self, _event) -> None:  # type: ignore[no-untyped-def]
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        if self.drawing:
+            p.fillRect(self.rect(), QColor(0, 0, 0, 1))  # quase invisível, mas recebe o mouse
+        color = QColor(self.COLOR)
+        color.setAlphaF(max(0.0, min(1.0, self.alpha)))
+        p.setPen(QPen(color, 5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+        for stroke in self.strokes:
+            if len(stroke) > 1:
+                path = QPainterPath(stroke[0].toPointF())
+                for pt in stroke[1:]:
+                    path.lineTo(pt.toPointF())
+                p.drawPath(path)
+        if self.drawing:
+            tip = QRectF(self.width() / 2 - 250, 14, 500, 34)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(16, 20, 24, 225))
+            p.drawRoundedRect(tip, 8, 8)
+            p.setPen(QColor(theme.TEXT))
+            p.drawText(tip, int(Qt.AlignmentFlag.AlignCenter), "Caneta ligada · F8 volta ao mouse · botão direito limpa")
+
+
+class TimerBadge(QWidget):
+    """Cronômetro flutuante no canto do monitor gravado: visível mesmo com o ReplayFlow minimizado.
+    Fica fora da área gravada quando há espaço (no modo Tela inteira ele aparece no vídeo)."""
+
+    def __init__(self) -> None:
+        super().__init__(None, Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint
+                         | Qt.WindowType.Tool | Qt.WindowType.WindowTransparentForInput
+                         | Qt.WindowType.WindowDoesNotAcceptFocus)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+        self.text = "00:00"
+        self.paused = False
+        self.resize(150, 44)
+
+    def show_at(self, region: Region) -> None:
+        found = to_logical(region)
+        screen = found[1] if found else QGuiApplication.primaryScreen()
+        g = screen.availableGeometry()
+        self.move(g.right() - self.width() - 16, g.top() + 16)
+        self.show()
+
+    def set_time(self, text: str, paused: bool) -> None:
+        self.text, self.paused = text, paused
+        self.update()
+
+    def paintEvent(self, _event) -> None:  # type: ignore[no-untyped-def]
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(16, 20, 24, 230))
+        p.drawRoundedRect(QRectF(self.rect()), 10, 10)
+        p.setBrush(QColor(theme.AMBER if self.paused else "#E0533D"))
+        p.drawEllipse(QRectF(14, 15, 14, 14))
+        font = QFont(self.font())
+        font.setPointSize(15)
+        font.setBold(True)
+        p.setFont(font)
+        p.setPen(QColor(theme.TEXT))
+        p.drawText(QRectF(36, 0, self.width() - 40, self.height()), int(Qt.AlignmentFlag.AlignVCenter), self.text)

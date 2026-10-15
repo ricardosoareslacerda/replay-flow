@@ -71,6 +71,9 @@ def describe_action(e: TimelineEvent, target: str = "") -> str:
             where = f"em \"{target}\" " if target else ""
             kind = "duplo clique" if e.data.get("double") else "clique"
             return f"{kind} {button} {where}(posição {e.data.get('x')}, {e.data.get('y')})"
+        case "mouse", "annotation":
+            (x1, y1), (x2, y2) = e.data["start"], e.data["end"]
+            return f"desenhou na tela (caneta) de ({x1}, {y1}) até ({x2}, {y2})"
         case "key", "text":
             return f"digitou \"{e.data['text']}\""
         case "key", "secret":
