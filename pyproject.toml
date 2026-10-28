@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "replayflow"
+version = "0.1.0"
+description = "Gravador local de fluxo de trabalho: vídeo, narração, OCR e input em uma timeline única para análise por IA."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.6",
+    "Pillow>=10",
+]
+
+[project.optional-dependencies]
+media = ["faster-whisper>=1.0", "av>=11,<16", "pytesseract>=0.3.10"]  # av 16+ quebra o decode_audio do faster-whisper
+gpu = ["nvidia-cublas-cu12", "nvidia-cudnn-cu12>=9,<10"]  # transcrição na placa NVIDIA (Windows/Linux)
+input = ["pynput>=1.7"]
+ui = ["PyQt6>=6.6"]
+obs = ["obsws-python>=1.7"]
+all = ["replayflow[media,input,ui,obs]"]
+dev = ["pytest>=8"]
+
+[project.scripts]
+replayflow = "replayflow.app.main:main"
+
+[tool.setuptools.packages.find]
+include = ["replayflow*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
