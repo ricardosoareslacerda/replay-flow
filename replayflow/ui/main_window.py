@@ -182,7 +182,13 @@ class MainWindow(QMainWindow):
         self.privacy_label.setObjectName("Muted")
         footer.addWidget(self.privacy_label)
         footer.addStretch(1)
-        hint = QLabel("F9 = digitar senha sem registrar")
+        self.btn_library = QPushButton("Minhas atividades →")
+        self.btn_library.setFlat(True)
+        self.btn_library.setStyleSheet(f"border:0;min-height:22px;color:{theme.TEAL_LIGHT};font-weight:600;")
+        self.btn_library.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_library.clicked.connect(self._library)
+        footer.addWidget(self.btn_library)
+        hint = QLabel("   ·   F9 = digitar senha sem registrar")
         hint.setObjectName("Muted")
         footer.addWidget(hint)
         root.addLayout(footer)
@@ -407,7 +413,9 @@ class MainWindow(QMainWindow):
         bar = self.menuBar()
         m = bar.addMenu("&Atividade")
         self.act_new = m.addAction("Nova atividade", self._start_over)
-        self.act_open = m.addAction("Abrir atividade gravada…", self._open_session)
+        self.act_library = m.addAction("Minhas atividades…", self._library)
+        self.act_library.setShortcut("Ctrl+L")
+        self.act_open = m.addAction("Abrir atividade de outra pasta…", self._open_session)
         self.act_import = m.addAction("Importar vídeo já gravado…", self._import_dialog)
         m.addSeparator()
         self.act_play = m.addAction("Assistir à gravação", self._play_video)
@@ -687,8 +695,10 @@ class MainWindow(QMainWindow):
         for w in (self.area_mode, self.monitor_combo, self.btn_pick, *self.source_rows, self.quality, self.out_format):
             w.setEnabled(idle and not has_video)
         self.chk_pen_log.setEnabled(idle and not has_video and self.sw_pen.isChecked())
-        for a in (self.act_new, self.act_open, self.act_import, self.act_audio, self.act_options, self.act_base):
+        for a in (self.act_new, self.act_library, self.act_open, self.act_import, self.act_audio, self.act_options,
+                  self.act_base):
             a.setEnabled(idle)
+        self.btn_library.setEnabled(idle)
         self.act_play.setEnabled(idle and has_video)
         self.act_folder.setEnabled(idle and has_session)
         self.act_delete.setEnabled(idle and has_video)
@@ -843,12 +853,23 @@ class MainWindow(QMainWindow):
         logging.getLogger("replayflow").info(f"atividade criada: {self.session.root}")
         self._refresh()
 
+    def _library(self) -> None:
+        from replayflow.ui.library import LibraryDialog
+
+        if self.thread is not None or self.capture is not None or self.obs is not None:
+            return
+        LibraryDialog(Path(self.base_path), self._load_session, self).exec()
+        if self.session and not self.session.root.exists():  # a aberta foi excluída na lista
+            self._start_over()
+
     def _open_session(self) -> None:
         d = QFileDialog.getExistingDirectory(self, "Abrir atividade gravada", self.base_path)
-        if not d:
-            return
+        if d:
+            self._load_session(Path(d))
+
+    def _load_session(self, root: Path) -> None:
         try:
-            self.session = session_store.load(Path(d))
+            self.session = session_store.load(root)
         except ReplayFlowError as e:
             return self._error(str(e))
         self.name.setText(self.session.name)
